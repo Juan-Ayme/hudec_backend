@@ -1,0 +1,33 @@
+# ---- ETL / harvester ----
+requests>=2.31.0
+psycopg2-binary>=2.9.9
+python-dotenv>=1.0.0
+
+# ---- Analytics & Reports ----
+pandas>=2.1.0
+numpy>=1.26.0
+matplotlib>=3.8.0
+reportlab>=4.0.0
+openpyxl>=3.1.2
+
+# ---- Backend FastAPI ----
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+python-multipart>=0.0.12
+
+# ---- Auth (bcrypt + JWT en cookies httpOnly) ----
+bcrypt>=4.2.0
+pyjwt>=2.9.0
+
+# ---- ORM & DB ----
+SQLAlchemy[asyncio]>=2.0.25
+asyncpg>=0.29.0
+alembic>=1.13.1
+greenlet>=3.0.3
+
+# ---- Tests ----
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0

@@ -1,0 +1,212 @@
+# =============================================================================
+#  .gitignore — KAWII backend
+#  Pensado para repo público / privado nuevo. Mantenelo conservador: cuando
+#  dudes, ignorá. Lo que se ignora también se puede recuperar; lo que se
+#  commitea por error a un repo público no.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Secretos y credenciales (NUNCA commitear)
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.template
+!.env.sample
+.claude
+
+# Llaves y certificados
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+secrets/
+.secrets/
+credentials.json
+service-account*.json
+
+# ---------------------------------------------------------------------------
+# Bytecode / caches / builds de Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ---------------------------------------------------------------------------
+# Tests / coverage / type-checkers / linters
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache
+.hypothesis/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+pytestdebug.log
+
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+.ruff_cache/
+.black/
+
+# ---------------------------------------------------------------------------
+# Entornos virtuales
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.Python
+env.bak/
+venv.bak/
+
+# ---------------------------------------------------------------------------
+# Notebooks
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# ---------------------------------------------------------------------------
+# Sistemas operativos y editores
+# ---------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.Trash-*
+
+# IDE / editores
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+.spyderproject
+.spyproject
+.ropeproject
+
+# ---------------------------------------------------------------------------
+# Logs (de runtime y de jobs)
+# ---------------------------------------------------------------------------
+*.log
+logs/*.log
+daily_sync.log
+update_all.log
+
+# ---------------------------------------------------------------------------
+# Backups de DB y dumps (NUNCA al repo: pesan y suelen tener PII)
+# ---------------------------------------------------------------------------
+*.sql.gz
+*.dump
+*.backup
+*.bak
+*.tmp
+db.sqlite3
+db.sqlite3-journal
+local_settings.py
+
+# ---------------------------------------------------------------------------
+# Reportes y outputs generados (se regeneran corriendo los endpoints/scripts)
+# ---------------------------------------------------------------------------
+*.pdf
+informe_*.pdf
+/_archive/
+/*.xlsx
+/*.json
+report_*.json
+reports/*.json
+/appDataDir/
+
+# Reportes Excel generados por analytics/
+analytics/reportes_excel/
+
+# ---------------------------------------------------------------------------
+# Scratch / debug sueltos en la raíz (limpia commits accidentales)
+# ---------------------------------------------------------------------------
+/debug_*.py
+/check_*.py
+/scratch_*.py
+/diagnostico_*.py
+/fix_*.py
+/_ddl_*.sql
+/_audit_*.sql
+
+# ---------------------------------------------------------------------------
+# Carpetas privadas / por-empresa que no van al repo público
+# ---------------------------------------------------------------------------
+# Nueva_estructura/ contiene la taxonomía interna de la empresa.
+# Se ignora el contenido por defecto, PERO se trackean explícitamente:
+#   - Estructura_inicial.json (fuente de verdad de la jerarquía
+#     Departamento/Categoría/Subcategoría; sync_taxonomy() la siembra en la DB)
+#   - Clasificacion_productos.md (documentación de la taxonomía)
+# Para multi-empresa: setear TAXONOMY_FILE=/etc/secrets/Estructura_inicial.json
+# en el .env de cada deploy y subir el JSON como Secret File en Render.
+Nueva_estructura/*
+!Nueva_estructura/Estructura_inicial.json
+!Nueva_estructura/Clasificacion_productos.md
+
+# Cuarentena local: archivos candidatos a borrar. Los revisás y los eliminás
+# a mano cuando estés seguro. No suben al repo.
+/_borrar/
+
+# ---------------------------------------------------------------------------
+# NOTA sobre carpetas que SÍ van al repo (no las ignoramos):
+# ---------------------------------------------------------------------------
+# - analytics/         → tiene código vivo (analytics/core/config.py es
+#                        importado por routers). Solo se ignoran los Excel
+#                        generados dentro (regla `analytics/reportes_excel/`).
+# - alembic/           → scaffold de migraciones (hoy dormido). Si lo activan
+#                        más adelante, los archivos generados deben commitearse.
+# - tools/migrations/  → migraciones SQL versionadas. Críticas para arrancar
+#                        una DB nueva: SIEMPRE van al repo.
+# - docs/              → documentación + schema.sql canónico.
+# - app/, harvester/   → código de aplicación.

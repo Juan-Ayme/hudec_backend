@@ -1,0 +1,231 @@
+# Render.com infra-as-code — Consorcio HUDEC
+# ==============================================================================
+# Modelo MULTI-TENANT: una sola instancia de backend + una sola DB sirve
+# a TODAS las empresas del consorcio (Kawii Pluss, Coya Cosmetics, y las
+# que se sumen). El aislamiento entre empresas lo hace Row-Level Security
+# de Postgres + el header X-Company-Id en cada request.
+#
+# NO hay un servicio por empresa (ese era el modelo viejo, ya deprecated).
+#
+# Componentes:
+#   1 database   hudec-db          shared por todas las empresas
+#   1 web        hudec-api         FastAPI multi-tenant
+#   1 web        hudec-frontend    Next.js (SSR)
+#   1 cron       hudec-sync        Corre mt_sync que loopea todas las empresas
+#
+# Deploy con blueprint:
+#   render blueprint → New Blueprint → apuntar a este archivo
+#   Todos los servicios se crean automáticamente.
+#
+# Secretos NO van acá — se cargan desde el dashboard por servicio:
+#   JWT_SECRET, TOKEN_ENCRYPTION_KEY, ADMIN_PASSWORD, CORS_ORIGINS,
+#   y las creds del rol hudec_app (ver notas al final).
+#
+# Schedule del cron: 08:00 UTC = 03:00 America/Lima.
+# ==============================================================================
+
+databases:
+  - name: hudec-db
+    plan: starter                   # $7/mes — free tier expira a los 90 días
+    databaseName: hudec
+    user: hudec                     # user default (SUPERUSER) — solo para migraciones iniciales.
+                                    # El backend NO se conecta con este usuario, ver notas.
+    ipAllowList: []                 # bloquea acceso público, solo desde servicios de Render
+
+services:
+  # ============================================================================
+  # BACKEND API — FastAPI multi-tenant
+  # ============================================================================
+  - type: web
+    name: hudec-api
+    runtime: python
+    plan: starter                   # $7/mes — Free (512 MB) es tight para matrices KAWII
+    branch: master
+    region: oregon
+    rootDir: backend_hudec
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # --- Base de datos (creds del rol hudec_app, NO el default de Render) ---
+      # IMPORTANTE: cambiar DB_USER y DB_PASSWORD manualmente en el dashboard
+      # después del deploy inicial. Ver "Post-deploy" al final de este archivo.
+      - key: DB_HOST
+        fromDatabase: { name: hudec-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: hudec-db, property: port }
+      - key: DB_NAME
+        fromDatabase: { name: hudec-db, property: database }
+      - key: DB_USER
+        sync: false                 # ← se llena a mano con 'hudec_app'
+      - key: DB_PASSWORD
+        sync: false                 # ← se llena a mano con el password del rol
+
+      # --- App / marca ---
+      - key: APP_NAME
+        value: HUDEC API
+      - key: APP_VERSION
+        value: 1.0.0
+      - key: DEBUG
+        value: "false"
+      - key: TIMEZONE
+        value: America/Lima
+      # BRAND_NAME y CLASSIFICATION_LABEL se leen de app_config por empresa,
+      # no de env vars globales. Se dejan vacías acá.
+
+      # --- Auth JWT ---
+      - key: JWT_SECRET
+        generateValue: true         # Render genera un valor random único
+      - key: JWT_EXPIRES_DAYS
+        value: "7"
+      - key: COOKIE_SECURE
+        value: "true"               # Render sirve por HTTPS
+      - key: COOKIE_SAMESITE
+        value: none                 # frontend y backend en dominios distintos
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false                 # ← password fuerte, se pone a mano
+
+      # --- Cifrado de tokens BSale (CRÍTICO — guardar en password manager) ---
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
+
+      # --- CORS ---
+      - key: CORS_ORIGINS
+        sync: false                 # ← se llena con ["https://hudec-frontend.onrender.com"]
+
+  # ============================================================================
+  # FRONTEND — Next.js (Web Service Node)
+  # ============================================================================
+  # Alternativa: Static Site si el output es 100% estático. Con SSR y features
+  # como el CompanyContext, mejor Web Service.
+  - type: web
+    name: hudec-frontend
+    runtime: node
+    plan: starter                   # $7/mes — Free es OK para tráfico bajo
+    branch: master
+    region: oregon
+    rootDir: frontend_hudec
+    buildCommand: npm install && npm run build
+    startCommand: npm run start -- --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE_URL
+        sync: false                 # ← se llena con https://hudec-api.onrender.com
+
+  # ============================================================================
+  # CRON — Sync multi-tenant desde BSale
+  # ============================================================================
+  # Un solo cron para TODAS las empresas: mt_sync loopea internamente sobre
+  # todas las empresas activas con token cargado.
+  - type: cron
+    name: hudec-sync
+    runtime: python
+    plan: starter                   # $7/mes — necesita ejecutarse rápido
+    branch: master
+    region: oregon
+    rootDir: backend_hudec
+    schedule: "0 8 * * *"           # 3:00 AM America/Lima
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m tools.maintenance.mt_sync --days 7
+    envVars:
+      # Comparte creds con la API (mismo rol hudec_app, misma DB, mismo TOKEN_KEY).
+      - key: DB_HOST
+        fromDatabase: { name: hudec-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: hudec-db, property: port }
+      - key: DB_NAME
+        fromDatabase: { name: hudec-db, property: database }
+      - key: DB_USER
+        fromService: { name: hudec-api, type: web, envVarKey: DB_USER }
+      - key: DB_PASSWORD
+        fromService: { name: hudec-api, type: web, envVarKey: DB_PASSWORD }
+      - key: TOKEN_ENCRYPTION_KEY
+        fromService: { name: hudec-api, type: web, envVarKey: TOKEN_ENCRYPTION_KEY }
+      - key: TIMEZONE
+        value: America/Lima
+
+# ==============================================================================
+# POST-DEPLOY — Pasos a mano DESPUÉS del primer deploy exitoso
+# ==============================================================================
+#
+# 1. Conectarse a la DB con el user default (SUPERUSER) para crear el rol
+#    hudec_app y aplicar migraciones. Desde tu compu:
+#
+#      psql "$INTERNAL_DATABASE_URL_QUE_TE_DA_RENDER"
+#
+#    Después, correr:
+#
+#      -- Aplicar las 3 migraciones en orden:
+#      \i docs/migrations/2026-06-30_multitenant_schema.sql
+#      \i docs/migrations/2026-07-01_encrypt_bsale_token.sql
+#      \i docs/migrations/2026-07-01_row_level_security.sql
+#
+#      -- Crear el rol hudec_app (NOSUPERUSER, NOBYPASSRLS):
+#      CREATE ROLE hudec_app LOGIN PASSWORD 'PW_FUERTE_ACA'
+#        NOSUPERUSER NOBYPASSRLS;
+#      GRANT USAGE ON SCHEMA public TO hudec_app;
+#      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO hudec_app;
+#      GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO hudec_app;
+#      GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO hudec_app;
+#
+# 2. En el dashboard de Render, en el servicio hudec-api → Environment:
+#      DB_USER      = hudec_app
+#      DB_PASSWORD  = <el password que pusiste arriba>
+#      ADMIN_PASSWORD = <password admin, fuerte>
+#      CORS_ORIGINS = ["https://hudec-frontend.onrender.com"]
+#
+#    Guardar → Render hace redeploy automático.
+#
+# 3. En el servicio hudec-frontend → Environment:
+#      NEXT_PUBLIC_API_BASE_URL = https://hudec-api.onrender.com
+#
+#    Guardar → redeploy.
+#
+# 4. Verificar:
+#      curl https://hudec-api.onrender.com/health
+#      → debe devolver {"status": "ok"} o similar.
+#      Al primer arranque se crea el admin (username=admin) con la password
+#      de ADMIN_PASSWORD. Al primer login lo mandará a /select-company si
+#      hay más de una empresa.
+#
+# 5. Crear las empresas del consorcio:
+#      Desde tu compu, con acceso a la DB de Render:
+#
+#      # Empresa 1: Kawii Pluss
+#      cd backend_hudec
+#      DATABASE_URL="postgres://..." .\.venv\Scripts\python.exe tools/set_company_token.py
+#        → id: 1, name: "Kawii Pluss", slug: "kawii-pluss", token: <bsale token>
+#
+#      # Empresa 2: Coya Cosmetics
+#      .\.venv\Scripts\python.exe tools/set_company_token.py
+#        → id: 2, name: "Coya Cosmetics", slug: "coya-cosmetics", token: <bsale token>
+#
+#      # Cargar config operativa de cada una (IDs BSale):
+#      .\.venv\Scripts\python.exe tools/set_company_config.py
+#        → id: 1 (kawii-pluss), luego id: 2 (coya-cosmetics)
+#
+# 6. Copiar JSONs de taxonomía al repo antes del deploy:
+#      Nueva_estructura/kawii-pluss.json
+#      Nueva_estructura/coya-cosmetics.json
+#
+# 7. Correr el primer sync manual (o esperar al cron de las 3 AM):
+#      Desde el dashboard de Render → hudec-sync → Trigger deploy
+#      O local con --company-id X:
+#      python -m tools.maintenance.mt_sync --company-id 1 --days 730
+#
+# ==============================================================================
+# COSTO MENSUAL ESTIMADO
+# ==============================================================================
+#   hudec-db       Starter Postgres    $7
+#   hudec-api      Starter Web         $7
+#   hudec-frontend Starter Web         $7   (o gratis si es Static Site)
+#   hudec-sync     Starter Cron        $7
+#                                    ─────
+#                                     $28/mes
+#
+# Con Free tier: solo la DB tiene que ser Starter ($7). Los otros 3 pueden
+# arrancar en Free, pero tienen sleep tras 15 min de inactividad y el
+# arranque en frío tarda ~30s. Aceptable para dev/piloto, no para prod.
