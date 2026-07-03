@@ -103,7 +103,7 @@ class RenameIn(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/departments", status_code=201)
-async def create_department(body: DepartmentIn, db: AsyncSession = Depends(get_db)) -> dict:
+async def create_department(body: DepartmentIn, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     res = await db.execute(text("SELECT id FROM departments WHERE name = :name"), {"name": body.name})
     existing = res.scalar()
     if existing:
@@ -111,8 +111,8 @@ async def create_department(body: DepartmentIn, db: AsyncSession = Depends(get_d
 
     slug = await _slugify(body.name)
     res = await db.execute(
-        text("INSERT INTO departments (name, slug) VALUES (:name, :slug) RETURNING id"),
-        {"name": body.name, "slug": slug}
+        text("INSERT INTO departments (company_id, name, slug) VALUES (:cid, :name, :slug) RETURNING id"),
+        {"cid": company.company_id, "name": body.name, "slug": slug}
     )
     await db.commit()
     new_id = res.scalar()
@@ -171,7 +171,7 @@ async def delete_department(dep_id: int, force: bool = False, db: AsyncSession =
 # ---------------------------------------------------------------------------
 
 @router.post("/categories", status_code=201)
-async def create_category(body: CategoryIn, db: AsyncSession = Depends(get_db)) -> dict:
+async def create_category(body: CategoryIn, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     dept_res = await db.execute(text("SELECT id, name FROM departments WHERE id = :id"), {"id": body.department_id})
     dept_row = dept_res.mappings().first()
     if not dept_row:
@@ -190,8 +190,8 @@ async def create_category(body: CategoryIn, db: AsyncSession = Depends(get_db)) 
 
     slug = await _slugify(f"{dept['name']}-{body.name}")
     res = await db.execute(
-        text("INSERT INTO categories (department_id, name, slug) VALUES (:did, :name, :slug) RETURNING id"),
-        {"did": body.department_id, "name": body.name, "slug": slug}
+        text("INSERT INTO categories (company_id, department_id, name, slug) VALUES (:cid, :did, :name, :slug) RETURNING id"),
+        {"cid": company.company_id, "did": body.department_id, "name": body.name, "slug": slug}
     )
     await db.commit()
     new_id = res.scalar()
@@ -402,7 +402,7 @@ ORDER BY departamento, categoria
 # ---------------------------------------------------------------------------
 
 @router.post("/subcategories", status_code=201)
-async def create_subcategory(body: SubcategoryIn, db: AsyncSession = Depends(get_db)) -> dict:
+async def create_subcategory(body: SubcategoryIn, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     cat_res = await db.execute(text("""
         SELECT c.id, c.name AS cat_name, d.name AS dept_name
         FROM categories c JOIN departments d ON d.id = c.department_id
@@ -425,8 +425,8 @@ async def create_subcategory(body: SubcategoryIn, db: AsyncSession = Depends(get
 
     slug = await _slugify(f"{cat['dept_name']}-{cat['cat_name']}-{body.name}")
     res = await db.execute(
-        text("INSERT INTO subcategories (category_id, name, slug) VALUES (:cid, :name, :slug) RETURNING id"),
-        {"cid": body.category_id, "name": body.name, "slug": slug}
+        text("INSERT INTO subcategories (company_id, category_id, name, slug) VALUES (:comp_id, :cid, :name, :slug) RETURNING id"),
+        {"comp_id": company.company_id, "cid": body.category_id, "name": body.name, "slug": slug}
     )
     await db.commit()
     new_id = res.scalar()

@@ -360,7 +360,7 @@ def _safe_date(v: Any):
 # elige la clasificación de la fila con más ventas.
 # ──────────────────────────────────────────────────────────────────────────
 
-def _aggregate_rows(rows_dict: list[dict[str, Any]]) -> dict:
+def _aggregate_rows(rows_dict: list[dict[str, Any]], classification_col: str = "Clasificación") -> dict:
     """Devuelve {dept: {cat: {subcat: {sku: {**fields}}}}}."""
     tree: dict[str, dict[str, dict[str, dict[str, dict[str, Any]]]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(dict))
@@ -382,7 +382,7 @@ def _aggregate_rows(rows_dict: list[dict[str, Any]]) -> dict:
         #   del último ciclo (que es lo que pregunta el dueño del negocio).
         unds = _num(r.get("Vend Lote Total"))
         stock = _num(r.get("Stock Disp"))
-        clasif = str(r.get("Clasificación") or "")
+        clasif = str(r.get(classification_col) or "")
         tend = str(r.get("Tendencia") or "")
         prod = str(r.get("Producto") or "")
         # ★ "Ingreso" = ÚLTIMA recepción (cuándo llegó el último lote), no la
@@ -998,7 +998,7 @@ def build_executive_workbook(
     for r in rows:
         rows_dict.append({c: r[i] for i, c in enumerate(cols) if i < len(r)})
 
-    tree = _aggregate_rows(rows_dict)
+    tree = _aggregate_rows(rows_dict, classification_col=classification_col)
 
     # Total general
     total_general = sum(
