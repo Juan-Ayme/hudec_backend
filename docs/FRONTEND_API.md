@@ -171,7 +171,7 @@ GET /pulse?office_id=1
       "venta_acumulada_recurrente": 92800.40,
       "meta": 125000.0,
       "meta_prorrateada": 116666.67,
-      "gap_a_meta": -19636.95,
+      "gap_a_meta": -19636.95,                  // ← venta − meta: negativo = falta para la meta
       "avance_pct": 84.3,                       // ← "vas al 84% de la meta"
       "cumplimiento_vs_ritmo_pct": 90.3,        // ← "vs ritmo necesario, vas al 90%"
       "proyeccion_cierre_mes": 112888.98,
@@ -656,7 +656,7 @@ GET /plan?office_id=&meses_calendario=6
     "venta_diaria_promedio": 6124,
     "meta": 215000,
     "meta_source": "exacta",
-    "gap_a_meta": -37419,
+    "gap_a_meta": -37419,                       // ← venta − meta: negativo = falta para la meta
     "proyeccion_lineal": 183705,
     "estado": "ATRASADO_LEVE",
     "venta_diaria_necesaria": 37419,

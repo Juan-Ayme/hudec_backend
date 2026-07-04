@@ -148,7 +148,7 @@ async def _mes_en_curso(
         avance = (venta_total / meta * 100) if meta else None
         ritmo = (venta_total / meta_prorr * 100) if meta_prorr else None
         proy = (venta_total / dias_transcurridos * dias_del_mes) if dias_transcurridos else None
-        gap = (venta_total - meta) if meta is not None else None
+        gap = (venta_total - meta) if meta is not None else None  # venta − meta (negativo = falta)
         dias_restantes = dias_del_mes - dias_transcurridos
         venta_diaria_nec = ((meta - venta_total) / dias_restantes) if (meta and dias_restantes > 0 and venta_total < meta) else None
         estado = _estado_meta(meta, avance, ritmo, dias_transcurridos, dias_del_mes)

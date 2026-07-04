@@ -20,7 +20,7 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from fastapi import Depends, APIRouter, HTTPException, Query
+from fastapi import Depends, APIRouter, HTTPException, Path, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1310,6 +1310,89 @@ async def compras_catalogo_excel(
             "X-Quiebres-Reales": str(len(filtered_rows)),
             "X-Categorias": str(len(cats)),
         },
+    )
+
+
+# ── Informes Gerenciales (3 Excel separados, lenguaje simple) ────────────────
+@router.get("/reporte-gerencial/{tipo}/excel", response_class=StreamingResponse)
+async def reporte_gerencial_excel(
+    tipo: str = Path(..., pattern="^(por-agotarse|estancados|rotacion)$"),
+    office_id: int | None = Query(None, description="Filtra por sucursal (vacío = todas)"),
+    dias_alerta: int = Query(10, ge=1, le=60, description="Umbral de cobertura de 'Por Agotarse'"),
+    dias_estancado: int = Query(60, ge=30, le=365, description="Días sin venta para considerar estancado"),
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+):
+    """Excel gerenciales (para lectores no técnicos) sobre la Matriz Operativa (05).
+
+    - **por-agotarse**: productos que venden y tienen < `dias_alerta` días de stock.
+    - **estancados**: stock sin venta hace `dias_estancado`+ días, valorizado al
+      costo (variant_costs.effective_cost).
+    - **rotacion**: frecuencia de venta traducida a "1 cada X días" + 4 niveles.
+
+    Cada informe abre con hoja 🎯 Resumen (KPIs + cómo leerlo) seguida de una
+    pestaña por Departamento (mismo esquema que el Excel de Compras & Catálogo).
+    """
+    from analytics import excel_gerencial
+    from app.kawii_matrix import service
+
+    settings = get_settings()
+    cid = company.company_id
+
+    result = await service.run_matrix(db, cid, "05", limit=None)
+    rows = result["rows"]
+
+    for r in rows:
+        r["Último Ingreso"] = r.get("Últ. Recepción") or r.get("1ª Recepción")
+
+    # office_id → nombre de sucursal (la matriz trae el nombre, no el ID).
+    suc_name: str | None = None
+    if office_id is not None:
+        srow = (await db.execute(
+            text("SELECT name FROM offices WHERE company_id = :cid AND bsale_office_id = :oid"),
+            {"cid": cid, "oid": office_id},
+        )).first()
+        suc_name = srow[0] if srow else None
+        if suc_name:
+            rows = [r for r in rows if str(r.get("Sucursal") or "") == suc_name]
+
+    if tipo == "por-agotarse":
+        wb = excel_gerencial.build_por_agotarse_workbook(
+            rows, dias_alerta=dias_alerta, sucursal=suc_name,
+            brand_name=settings.BRAND_NAME,
+        )
+        base = "por_agotarse"
+    elif tipo == "estancados":
+        res = await db.execute(text("""
+            SELECT v.display_code AS sku, MAX(vc.effective_cost) AS costo
+            FROM variants v
+            JOIN variant_costs vc
+              ON vc.company_id = v.company_id
+             AND vc.bsale_variant_id = v.bsale_variant_id
+            WHERE v.company_id = :cid AND vc.effective_cost IS NOT NULL
+            GROUP BY v.display_code
+        """), {"cid": cid})
+        costos = {str(r["sku"]): float(r["costo"]) for r in res.mappings().all()}
+        wb = excel_gerencial.build_estancados_workbook(
+            rows, costos, dias_estancado=dias_estancado, sucursal=suc_name,
+            brand_name=settings.BRAND_NAME,
+        )
+        base = "inventario_estancado"
+    else:
+        wb = excel_gerencial.build_rotacion_workbook(
+            rows, sucursal=suc_name, brand_name=settings.BRAND_NAME,
+        )
+        base = "rotacion_productos"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fecha = datetime.now().strftime("%Y-%m-%d")
+    filename = f"{base}_{fecha}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

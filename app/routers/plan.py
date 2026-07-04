@@ -26,6 +26,8 @@ Convención:
   como objetivo absoluto), pero el "crecimiento" interno (tendencia YoY) se
   calcula con venta recurrente (sin estacional), para que un Día del Padre
   no infle artificialmente la tendencia esperada.
+- gap_a_meta = venta − meta (negativo = falta para llegar). Misma convención
+  de signo que /pulse y /salud-catalogo.
 """
 
 from __future__ import annotations
@@ -151,7 +153,7 @@ async def _proyeccion_mes_en_curso(
             meta = sum(x for x in sub if x is not None) or None
 
     proy_lineal = venta_total / dias_trans * dias_del_mes if dias_trans else None
-    gap = (meta - venta_total) if meta is not None else None
+    gap = (venta_total - meta) if meta is not None else None  # venta − meta (negativo = falta)
     venta_diaria_actual = venta_total / dias_trans if dias_trans else 0
     venta_diaria_necesaria = (
         (meta - venta_total) / dias_restantes

@@ -737,7 +737,7 @@ async def _bloque_estable_80_20(
             "meta_mensual_pen":       meta,
             "meta_prorrateada":       round(meta_prorr, 2) if meta_prorr is not None else None,
             "venta_acumulada_mes":    round(venta_mes, 2),
-            "gap_a_meta":             round(venta_mes - meta, 2) if meta is not None else None,
+            "gap_a_meta":             round(venta_mes - meta, 2) if meta is not None else None,  # venta − meta (negativo = falta)
             "avance_pct":             round(avance, 1) if avance is not None else None,
             "ritmo_vs_meta_pct":      round(ritmo, 1)  if ritmo  is not None else None,
             "proyeccion_cierre":      round(proy, 2)   if proy   is not None else None,
