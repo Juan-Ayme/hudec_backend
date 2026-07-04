@@ -893,15 +893,14 @@ SELECT
         --    Es OPORTUNIDAD perdida (no demanda extinta). Caso típico: B1045
         --    Asamblea (25 unds en 21d, luego 62d sin venta). Acción: REPONER.
         --    (gate real: dias_sin_venta_90d > 60, heredado de no matchear PASADO ≤60)
-        --    ★ FIX P25 (2026-06-15): + dias_absorcion ≤45d. Sin esto, casos como
-        --    Espátula EP-9534 (236d en agotarse) se clasifican como "oportunidad
-        --    perdida" cuando es nicho lento que se acabó (acción real: NO REPONER).
+        --    ★ FIX P25 revertido: se eliminó dias_absorcion_lote <= 45 porque 
+        --    castigaba a productos exitosos que tenían lotes grandes. La velocidad 
+        --    real la garantiza la validación de proy_mes.
         WHEN stock_disponible = 0
              AND unds_recibidas_lifetime >= 2
              AND (unds_vendidas_lifetime + unds_consumidas_lifetime + unds_trasladadas_lifetime) >= unds_recibidas_lifetime * (SELECT sellthrough_exito_ratio FROM params)
-             AND (dias_absorcion_lote IS NULL OR dias_absorcion_lote <= (SELECT dias_absorcion_bestseller_max FROM params))
              AND proy_mes >= GREATEST((SELECT proy_mes_min_floor FROM params), LEAST((SELECT proy_mes_min_cap FROM params), COALESCE(cb.avg_proy_cat, (SELECT proy_mes_min_cap FROM params)) * (SELECT proy_mes_cat_ratio FROM params)))
-             THEN '💎 OPORTUNIDAD PERDIDA — REPONER YA: lote RÁPIDO (≤45d) y ya van +60d sin reabastecer (venta perdida diaria)'
+             THEN '💎 OPORTUNIDAD PERDIDA — REPONER YA: lote RÁPIDO y ya van +60d sin reabastecer (venta perdida diaria)'
 
         -- 🐢 ROTACIÓN LENTA SANA: vendió todo + lento (<10/mes) + aún viva (≤60d).
         --    Vende constante pero modesto — reponer cantidades chicas.
@@ -909,6 +908,7 @@ SELECT
              AND unds_recibidas_lifetime >= 2
              AND (unds_vendidas_lifetime + unds_consumidas_lifetime + unds_trasladadas_lifetime) >= unds_recibidas_lifetime * (SELECT sellthrough_exito_ratio FROM params)
              AND COALESCE(dias_sin_venta_90d, 9999) <= (SELECT ventana_dead_dias FROM params)
+             AND proy_mes < GREATEST((SELECT proy_mes_min_floor FROM params), LEAST((SELECT proy_mes_min_cap FROM params), COALESCE(cb.avg_proy_cat, (SELECT proy_mes_min_cap FROM params)) * (SELECT proy_mes_cat_ratio FROM params)))
              THEN '🐢 LENTO PERO CONSTANTE — REPONER POCO: producto nicho que se agotó vendiendo despacio pero seguido'
 
         -- 💤 DEMANDA EXTINTA: vendió todo pero >60d sin venta.
