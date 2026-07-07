@@ -1,4 +1,3 @@
-import math
 from collections import defaultdict
 from typing import Sequence, Callable
 from openpyxl import Workbook
@@ -286,11 +285,12 @@ def _add_dept_sheets_jerarquico(
 # 1) POR AGOTARSE
 # ══════════════════════════════════════════════════════════════════════════
 def build_por_agotarse_workbook(
-    rows: list[dict], dias_alerta: int, sucursal: str | None, brand_name: str
+    rows: list[dict], dias_alerta: int, sucursal: str | None, brand_name: str,
+    cobertura_objetivo_dias: int = 30,
 ) -> Workbook:
     wb = Workbook()
     wb.remove(wb.active)
-    
+
     items = []
     for r in rows:
         unds90 = _num(r.get("Unds Vend (90d)"))
@@ -302,7 +302,13 @@ def build_por_agotarse_workbook(
         if dias_agota <= dias_alerta:
             r["_dias_agota"] = dias_agota
             r["_ritmo"] = ritmo
-            r["_comprar"] = int(math.ceil((dias_alerta - dias_agota) * ritmo)) if dias_agota < dias_alerta else 0
+            # Misma fórmula que el dashboard de compras (/compras-catalogo):
+            # reponer hasta cobertura_objetivo_dias usando velocidad reciente 30d
+            # (fallback: velocidad del lote).
+            vel_30d = _num(r.get("Vel últimos 30d"))
+            vel_90d = _num(r.get("Velocidad (uds/día)"))
+            vel_ref = vel_30d if vel_30d > 0 else vel_90d
+            r["_comprar"] = max(0, round(vel_ref * cobertura_objetivo_dias) - int(stock))
             items.append(r)
             
     dept_groups = defaultdict(list)
@@ -314,7 +320,8 @@ def build_por_agotarse_workbook(
     
     headers = ["Tipo", "Categoría", "Subcategoría", "SKU", "Producto",
                "Stock actual", "Vende por día", "Se agota en (días)",
-               "Vendido 90 días", "Comprar sugerido", "Último Ingreso", "Llegó hace (días)"]
+               "Vendido 90 días", f"Comprar sugerido ({cobertura_objetivo_dias} días)",
+               "Último Ingreso", "Llegó hace (días)"]
     fmts = ["text", "text", "text", "text", "text",
             "int", "dec1", "int", "int", "int", "text", "int"]
 
@@ -332,7 +339,11 @@ def build_por_agotarse_workbook(
             int(_num(c.get("Llegó hace (días)"))) if c.get("Llegó hace (días)") else None,
         ),
         row_fill=None, bold_cols={3, 5, 7},
-        nota_de=lambda its: f"Mostrando {len(its)} productos con stock bajo."
+        nota_de=lambda its: (
+            f"Mostrando {len(its)} productos con stock bajo. "
+            f"'Comprar sugerido' = cantidad para cubrir {cobertura_objetivo_dias} días de venta "
+            f"según velocidad reciente (igual al dashboard de compras)."
+        )
     )
     if not wb.sheetnames:
         ws = wb.create_sheet("Sin datos")

@@ -42,6 +42,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from analytics.similares import similar_text
+
 # ──────────────────────────────────────────────────────────────────────────
 # Paleta NARANJA (Tailwind orange + grays). Equivalente al rosa/magenta COYA.
 # ──────────────────────────────────────────────────────────────────────────
@@ -671,15 +673,21 @@ DEPT_COL_WIDTHS = [_WIDTH_BY_HEADER[h] for h in DEPT_HEADERS]
 
 def _build_dept_sheet(wb: Workbook, dept_name: str, dept_data: dict,
                       rank: int, total_dept: float, total_general: float,
-                      meta_line: str, used_names: set[str], tab_color: str) -> None:
+                      meta_line: str, used_names: set[str], tab_color: str,
+                      similares_map: dict[str, dict] | None = None) -> None:
     sheet_name = _safe_sheet_name(f"{rank}. {dept_name}", used_names)
     ws = wb.create_sheet(title=sheet_name)
     ws.sheet_properties.tabColor = tab_color
 
-    NCOLS = len(DEPT_HEADERS)
+    # Columna opt-in "⚠ Similar en tienda" (solo cuando el caller pasa el
+    # mapa, ej. Excel de compras). Va al FINAL para no mover los COL_*.
+    headers = DEPT_HEADERS + (["⚠ Similar en tienda"] if similares_map is not None else [])
+    col_similar = len(DEPT_HEADERS) + 1 if similares_map is not None else None
+    NCOLS = len(headers)
 
     # Anchos
-    for i, w in enumerate(DEPT_COL_WIDTHS, start=1):
+    col_widths = DEPT_COL_WIDTHS + ([46] if similares_map is not None else [])
+    for i, w in enumerate(col_widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     # Title
@@ -722,7 +730,7 @@ def _build_dept_sheet(wb: Workbook, dept_name: str, dept_data: dict,
 
     # Headers (fila 5; la 4 queda en blanco)
     header_row = 5
-    for i, h in enumerate(DEPT_HEADERS, start=1):
+    for i, h in enumerate(headers, start=1):
         c = ws.cell(row=header_row, column=i, value=h)
         _apply(c, font=_font(C_HEADER_FG, size=10, bold=True),
                fill=_fill(C_HEADER_BG), align=_align("center", "center", wrap=True),
@@ -959,6 +967,16 @@ def _build_dept_sheet(wb: Workbook, dept_name: str, dept_data: dict,
                 c = ws.cell(row=row, column=COL_CLASIF, value=info["clasif"] or "—")
                 _apply(c, font=_font(tone[0], size=10, bold=True),
                        fill=_fill(tone[1]), align=_align("left", "center", wrap=True))
+                # ⚠ Similar en tienda: ya existe un producto parecido con
+                # stock — revisar antes de comprar (advertencia, no excluye).
+                if col_similar is not None:
+                    info_sim = similares_map.get(sku)
+                    if info_sim:
+                        c = ws.cell(row=row, column=col_similar,
+                                    value=similar_text(info_sim))
+                        _apply(c, font=_font("78350F", size=9, bold=True),
+                               fill=_fill("FEF3C7"),
+                               align=_align("left", "center", wrap=True))
                 ws.row_dimensions[row].height = 18
                 row += 1
 
@@ -986,6 +1004,9 @@ def build_executive_workbook(
     sucursal: str | None = None,
     accion_label: str | None = None,
     periodo_dias: int = 60,
+    # SKU → info de similares (analytics.similares). None (default) = sin la
+    # columna "⚠ Similar en tienda" → salida idéntica a la previa.
+    similares_map: dict[str, dict] | None = None,
 ) -> Workbook:
     """Construye el workbook ejecutivo (formato COYA-naranja).
 
@@ -1034,6 +1055,7 @@ def build_executive_workbook(
         _build_dept_sheet(
             wb, dept_name, tree[dept_name], rank, total_dept,
             total_general, meta_line, used_names, tab_color,
+            similares_map=similares_map,
         )
 
     return wb

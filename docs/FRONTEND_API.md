@@ -16,6 +16,7 @@ configuración.
 - [Vista 2 — Diagnóstico (`GET /diagnosis`)](#vista-2--diagnóstico-get-diagnosis)
 - [Vista 3 — Salud del catálogo (`GET /catalog-health`)](#vista-3--salud-del-catálogo-get-catalog-health)
 - [Vista 4 — Plan del mes (`GET /plan`)](#vista-4--plan-del-mes-get-plan)
+- [Compras & Catálogo (`GET /analytics/compras-catalogo`)](#compras--catálogo-get-analyticscompras-catalogo)
 - [Admin — Metas del mes (`/analytics/goals`)](#admin--metas-del-mes-analyticsgoals)
 - [Admin — Category Targets (`/config/category-targets`)](#admin--category-targets-configcategory-targets)
 - [Admin — Variant Costs (`/config/variant-costs`)](#admin--variant-costs-configvariant-costs)
@@ -755,6 +756,102 @@ GET /plan?office_id=&meses_calendario=6
 4. **Calendario** como timeline horizontal scrolleable con foto/icono de categoría
    protagonista por mes.
 5. **Presupuesto** con desglose como tabla expandible por sucursal/categoría.
+
+---
+
+## Compras & Catálogo (`GET /analytics/compras-catalogo`)
+
+Dashboard de Compras Inteligente: SKUs en **quiebre real** (severidades 🔴 Crítico
+y 🟠 Alta de la clasificación KAWII sobre la matriz 04b de 90 días) con métricas
+para decidir compras. La página `/compras-catalogo` del frontend consume este
+endpoint; el Excel descargable usa exactamente el mismo universo de SKUs.
+
+### `GET /analytics/compras-catalogo`
+
+Query params (todos opcionales):
+
+| Param | Tipo | Descripción |
+|---|---|---|
+| `office_id` | int | Filtra por sucursal (vacío = todas) |
+| `fecha_desde` | date `YYYY-MM-DD` | Solo SKUs con Últ. Recepción **≥** esta fecha |
+| `fecha_hasta` | date `YYYY-MM-DD` | Solo SKUs con Últ. Recepción **≤** esta fecha |
+
+El rango de fechas es **inclusivo** y filtra por fecha de ingreso (última
+recepción del SKU en la sucursal). SKUs sin recepción registrada quedan fuera
+cuando el filtro está activo. `fecha_desde > fecha_hasta` responde HTTP 400.
+
+```jsonc
+// Response (resumido)
+{
+  "generado_at": "2026-07-06T15:00:00",
+  "office_id": null,
+  "sucursal": null,
+  "cobertura_objetivo_dias": 30,        // días de stock a los que repone la sugerencia
+  "filtros": { "office_id": null, "fecha_desde": "2026-06-01", "fecha_hasta": "2026-06-30" },
+  "kpis": {
+    // SKUs críticos, venta 90d en riesgo, unidades a reponer, etc.
+    "skus_con_similar": 4              // SKUs con ≥1 producto similar con stock en tienda
+  },
+  "por_departamento": [ /* agregados por departamento (sidebar) */ ],
+  "por_accion":       [ /* breakdown por acción: REPONER YA, PROMOCIONAR, ... */ ],
+  "skus": [
+    {
+      "sku": "ABC-123",
+      "producto": "…",
+      "sucursal": "…",
+      "clasificacion": "…",             // etiqueta KAWII original
+      "severidad": "🔴 Crítico",
+      "accion": "REPONER YA",
+      "stock_disponible": 2,
+      "velocidad_30d": 0.8,             // uds/día últimos 30d (solo días con stock)
+      "velocidad_90d": 0.5,
+      "cantidad_sugerida": 22,          // max(0, round(vel_reciente × 30) − stock)
+      "ultima_venta": "2026-07-04",
+      "similares": {                    // null si no hay similares con stock
+        "vigilar": 1, "lentos": 0, "liquidar": 0,   // conteo por estado
+        "items": [
+          {
+            "sku": "190006",
+            "producto": "HISOPO POTE PEQUEÑO",
+            "estado": "vigilar",        // "vigilar" (saludable) | "lentos" | "liquidar"
+            "stock": 169,
+            "cobertura": "72 días",
+            "unds_vend_90d": 71,
+            "sucursal": "TIENDA 1"
+          }
+        ]
+      },
+      // + departamento, categoria, subcategoria, cobertura_dias, tendencia, etc.
+    }
+  ]
+}
+```
+
+`cantidad_sugerida` usa la velocidad de los últimos 30 días (fallback: velocidad
+90d) y repone hasta `cobertura_objetivo_dias` (30) días de stock.
+
+**`similares`** — productos de nombre parecido (misma subcategoría, misma
+sucursal) que ya tienen stock en tienda, para que el gerente no compre un
+duplicado (ej. "BYWIN HISOPOS" agotado cuando "HISOPO POTE PEQUEÑO" está sano).
+Es una **advertencia, nunca exclusión**: el SKU sigue en la lista y la decisión
+es del gerente (encaja con la acción `comprar_similar` de purchase-decisions).
+El matching es el mismo del chip "N en saludable" de `/ventas-jerarquicas`
+(tokens del nombre + singular/plural), calculado en backend
+(`analytics/similares.py`). Solo se consideran similares **con stock > 0**
+(un similar agotado no sustituye nada). Los items vienen ordenados: primero
+`vigilar` (saludable), luego `lentos`, luego `liquidar`; a igual estado, más
+stock primero.
+
+### `GET /analytics/compras-catalogo/excel`
+
+Mismos filtros (`office_id`, `fecha_desde`, `fecha_hasta`) + `days` (default 30,
+ventana de la pestaña "Venta por categoría"). Devuelve un `.xlsx` de 2 pestañas
+con el **mismo universo de SKUs** que el JSON.
+
+El Excel incluye la advertencia de similares: columna **"⚠ Similar en tienda"**
+(última, en ámbar) en las pestañas por departamento con el mejor sustituto
+(`PRODUCTO (SKU) · stock und · cob. X días · +N más`), y una línea resumen en el
+🎯 Memo Ejecutivo. Header de respuesta: `X-Skus-Con-Similar`.
 
 ---
 

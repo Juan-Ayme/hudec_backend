@@ -975,14 +975,46 @@ def _classify_severidad_accion_causal(label: str) -> tuple[str, str, str]:
 # dashboard y el Excel muestren EXACTAMENTE el mismo universo de SKUs.
 # ════════════════════════════════════════════════════════════════════════════
 
+def _recepcion_en_rango(
+    valor: Any,
+    fecha_desde: date | None,
+    fecha_hasta: date | None,
+) -> bool:
+    """True si la fecha de recepción cae dentro del rango inclusivo.
+
+    Sin filtro activo (ambos None) siempre pasa. Con filtro activo, una fila
+    sin fecha de recepción se excluye (no puede pasar un filtro por ingreso).
+    """
+    if fecha_desde is None and fecha_hasta is None:
+        return True
+    if isinstance(valor, datetime):
+        valor = valor.date()
+    if not isinstance(valor, date):
+        return False
+    if fecha_desde is not None and valor < fecha_desde:
+        return False
+    if fecha_hasta is not None and valor > fecha_hasta:
+        return False
+    return True
+
+
 async def _load_compras_catalogo(
     db: AsyncSession,
     company_id: int,
     office_id: int | None,
-) -> tuple[list[str], list[dict], str | None, str]:
+    fecha_desde: date | None = None,
+    fecha_hasta: date | None = None,
+) -> tuple[list[str], list[dict], str | None, str, dict[tuple[str, str], dict]]:
     """Ejecuta la matriz 04b y filtra a SKUs en quiebre real (Crítico + Alta).
 
-    Returns: (cols, filtered_rows, suc_name, label_col)
+    `fecha_desde`/`fecha_hasta` acotan por "Últ. Recepción" (rango inclusivo).
+
+    Returns: (cols, filtered_rows, suc_name, label_col, similares_index)
+
+    `similares_index` ((Sucursal, Código SKU) → info) avisa qué SKUs del
+    universo filtrado ya tienen un producto de nombre parecido con stock en la
+    misma tienda. Se calcula ANTES del filtro de severidad porque los
+    candidatos (saludables/lentos/liquidar) no sobreviven al filtro.
     """
     from app.kawii_matrix import service
 
@@ -1012,9 +1044,22 @@ async def _load_compras_catalogo(
             continue
         if not _is_quiebre_real(str(r.get(label_col) or "")):
             continue
+        if not _recepcion_en_rango(r.get("Últ. Recepción"), fecha_desde, fecha_hasta):
+            continue
         filtered.append(r)
 
-    return cols, filtered, suc_name, label_col
+    # Similares se buscan sobre el universo COMPLETO (rows), acotando los
+    # targets al universo filtrado (superset de kanban "comprar": incluye
+    # p.ej. ROTACIÓN BAJANDO, que también debe recibir el aviso).
+    from analytics.similares import build_similarity_index
+
+    target_keys = {
+        (str(r.get("Sucursal") or ""), str(r.get("Código SKU") or ""))
+        for r in filtered
+    }
+    similares_index = build_similarity_index(rows, label_col=label_col, target_keys=target_keys)
+
+    return cols, filtered, suc_name, label_col, similares_index
 
 
 async def _margen_por_sku(
@@ -1096,13 +1141,17 @@ def _to_float(v: Any) -> float:
 
 
 # Cobertura objetivo para calcular "cantidad sugerida a ordenar".
-# 30 días = 1 mes de stock. Coincide con COBERTURA_OBJETIVO_DIAS de la cascada.
+# 30 días = 1 mes de stock. OJO: la cascada SQL usa su propio parámetro
+# cobertura_objetivo_dias (default 45 en config_defaults.py) — son valores
+# independientes. Este 30 aplica al dashboard de compras y al excel por-agotarse.
 _COBERTURA_OBJETIVO_DIAS = 30
 
 
 @router.get("/compras-catalogo")
 async def compras_catalogo_json(
     office_id: int | None = Query(None, description="Filtra por sucursal (vacío = todas)"),
+    fecha_desde: date | None = Query(None, description="Solo SKUs con Últ. Recepción >= esta fecha (YYYY-MM-DD)"),
+    fecha_hasta: date | None = Query(None, description="Solo SKUs con Últ. Recepción <= esta fecha (YYYY-MM-DD)"),
     company: CurrentCompany = Depends(get_current_company),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1112,16 +1161,24 @@ async def compras_catalogo_json(
     pero entregados como JSON estructurado para que el frontend pinte una página
     interactiva tipo dashboard.
 
+    `fecha_desde`/`fecha_hasta` filtran por fecha de ingreso (Últ. Recepción, rango
+    inclusivo); sin ellos se devuelve todo el universo.
+
     Respuesta:
       - `kpis`              : totales agregados (SKUs críticos, venta 90d en riesgo, unidades a reponer)
       - `por_departamento`  : agregados por departamento (para sidebar/distribución)
       - `por_accion`        : breakdown por acción sugerida (REPONER YA, PROMOCIONAR, etc.)
       - `skus`              : lista detallada (un objeto por SKU×Sucursal con todos los campos)
+      - `filtros`           : eco de los filtros aplicados (office_id, fecha_desde, fecha_hasta)
 
     NO incluye proveedor ni lead-time (no están en la BD; campos pendientes).
     """
+    if fecha_desde is not None and fecha_hasta is not None and fecha_desde > fecha_hasta:
+        raise HTTPException(400, "fecha_desde no puede ser mayor que fecha_hasta")
     cid = company.company_id
-    cols, filtered_rows, suc_name, label_col = await _load_compras_catalogo(db, cid, office_id)
+    cols, filtered_rows, suc_name, label_col, similares_index = await _load_compras_catalogo(
+        db, cid, office_id, fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
+    )
 
     # 1) Construir lista de SKUs con campos derivados (severidad, acción, cantidad sugerida).
     skus: list[dict] = []
@@ -1163,6 +1220,11 @@ async def compras_catalogo_json(
                 if hasattr(r.get("Fecha Últ. Venta"), "isoformat") else r.get("Fecha Últ. Venta"),
             "tendencia": r.get("Tendencia"),
             "cantidad_sugerida": cantidad_sugerida,
+            # Productos de nombre parecido con stock en la misma tienda
+            # (None si no hay). Advertencia informativa: el SKU NO se excluye.
+            "similares": similares_index.get(
+                (str(r.get("Sucursal") or ""), str(r.get("Código SKU") or ""))
+            ),
             # Placeholders (data no disponible en BD por ahora):
             "margen_pct": None,
             "margen_soles": None,
@@ -1197,6 +1259,7 @@ async def compras_catalogo_json(
         "venta_90d_en_riesgo": round(venta_en_riesgo, 2),
         "unidades_a_reponer": int(unidades_reponer),
         "margen_promedio_pct": round(margen_ponderado, 1) if margen_ponderado is not None else None,
+        "skus_con_similar": sum(1 for s in skus if s["similares"]),
     }
 
     # 4) Agregados por departamento (para sidebar y distribución).
@@ -1242,6 +1305,11 @@ async def compras_catalogo_json(
         "office_id": office_id,
         "sucursal": suc_name,
         "cobertura_objetivo_dias": _COBERTURA_OBJETIVO_DIAS,
+        "filtros": {
+            "office_id": office_id,
+            "fecha_desde": fecha_desde.isoformat() if fecha_desde else None,
+            "fecha_hasta": fecha_hasta.isoformat() if fecha_hasta else None,
+        },
         "kpis": kpis,
         "por_departamento": por_dept,
         "por_accion": por_accion,
@@ -1254,6 +1322,8 @@ async def compras_catalogo_json(
 async def compras_catalogo_excel(
     days: int = Query(30, ge=1, le=365, description="Ventana para 'Venta por categoría'"),
     office_id: int | None = Query(None, description="Filtra ambas pestañas por sucursal"),
+    fecha_desde: date | None = Query(None, description="Solo SKUs con Últ. Recepción >= esta fecha (YYYY-MM-DD)"),
+    fecha_hasta: date | None = Query(None, description="Solo SKUs con Últ. Recepción <= esta fecha (YYYY-MM-DD)"),
     company: CurrentCompany = Depends(get_current_company),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1261,18 +1331,27 @@ async def compras_catalogo_excel(
 
     Pestaña 1 — **SKUs en quiebre**: solo lo que genera VENTA PERDIDA HOY
     (severidades 🔴 Crítico y 🟠 Alta de la matriz 04). No incluye demanda extinta,
-    bajo volumen, exceso ni saludables.
+    bajo volumen, exceso ni saludables. `fecha_desde`/`fecha_hasta` filtran por
+    fecha de ingreso (Últ. Recepción) — mismo universo que el endpoint JSON.
 
     Pestaña 2 — **Venta por categoría**: ranking de categorías con ticket promedio
     de la categoría (ventas / tickets).
     """
     from analytics.excel_compras_catalogo import build_compras_catalogo_workbook_jerarquico
+    from analytics.similares import merge_similars_by_sku
+
+    if fecha_desde is not None and fecha_hasta is not None and fecha_desde > fecha_hasta:
+        raise HTTPException(400, "fecha_desde no puede ser mayor que fecha_hasta")
 
     settings = get_settings()
     cid = company.company_id
 
     # 1) Universo de SKUs en quiebre real (compartido con el endpoint JSON).
-    cols, filtered_rows, suc_name, _label_col = await _load_compras_catalogo(db, cid, office_id)
+    cols, filtered_rows, suc_name, _label_col, similares_index = await _load_compras_catalogo(
+        db, cid, office_id, fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
+    )
+    # El Excel consolida filas por SKU (une sucursales) → índice por SKU.
+    similares_map = merge_similars_by_sku(similares_index)
 
     # 2) Venta por categoría — para la pestaña final (tabla simple con ticket promedio).
     cats = await sales_by_category(days=days, office_id=office_id, company=company, db=db)
@@ -1295,6 +1374,7 @@ async def compras_catalogo_excel(
         descripcion=descripcion,
         sucursal_filtro=suc_name,
         brand_name=settings.BRAND_NAME,
+        similares_map=similares_map,
     )
 
     buf = io.BytesIO()
@@ -1309,6 +1389,7 @@ async def compras_catalogo_excel(
             "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Quiebres-Reales": str(len(filtered_rows)),
             "X-Categorias": str(len(cats)),
+            "X-Skus-Con-Similar": str(len(similares_map)),
         },
     )
 
@@ -1360,6 +1441,7 @@ async def reporte_gerencial_excel(
         wb = excel_gerencial.build_por_agotarse_workbook(
             rows, dias_alerta=dias_alerta, sucursal=suc_name,
             brand_name=settings.BRAND_NAME,
+            cobertura_objetivo_dias=_COBERTURA_OBJETIVO_DIAS,
         )
         base = "por_agotarse"
     elif tipo == "estancados":

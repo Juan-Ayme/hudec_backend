@@ -154,6 +154,7 @@ def _sheet_memo_ejecutivo(
     filtered_rows: list[dict],
     sucursal: str | None,
     brand_name: str,
+    skus_con_similar: int = 0,
 ) -> Worksheet:
     """Crea la pestaña 🎯 Memo Ejecutivo con KPIs, top 15 y breakdowns."""
     ws = wb.create_sheet("🎯 Memo Ejecutivo")
@@ -233,6 +234,20 @@ def _sheet_memo_ejecutivo(
     # Si quisiera espacio real, tendría que usar cols A, C, E, G y dejar B, D, F en blanco angosto.
     for col in ("A", "B", "C", "D", "E", "F", "G", "H"):
         ws.column_dimensions[col].width = 18
+
+    # ── 2b) Aviso de similares (fila 10, gap antes del Top 15) ──
+    # Advertencia, no exclusión: el gerente decide si compra o usa el similar.
+    if skus_con_similar > 0:
+        ws.merge_cells("A10:H10")
+        cell = ws["A10"]
+        cell.value = (
+            f"⚠ {skus_con_similar} SKUs a comprar ya tienen un producto similar con stock en tienda "
+            "— ver columna '⚠ Similar en tienda' en las pestañas por departamento"
+        )
+        cell.font = Font(name="Calibri", size=10, bold=True, color="78350F")
+        cell.fill = PatternFill("solid", fgColor="FEF3C7")
+        cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws.row_dimensions[10].height = 20
 
     # ── 3) Top 15 SKUs por venta perdida estimada (filas 11+) ──
     ws.merge_cells("A11:H11")
@@ -512,6 +527,7 @@ def build_compras_catalogo_workbook_jerarquico(
     descripcion: str,
     sucursal_filtro: str | None,
     brand_name: str,
+    similares_map: dict[str, dict] | None = None,
 ) -> Workbook:
     """Workbook ejecutivo (resumen + 1 hoja por Departamento) + pestaña Venta por categoría.
 
@@ -537,6 +553,7 @@ def build_compras_catalogo_workbook_jerarquico(
         sucursal=sucursal_filtro,
         accion_label="Compras & Catálogo",
         periodo_dias=90,
+        similares_map=similares_map,
     )
 
     # Agregar pestaña final "Venta por categoría" con la tabla simple + ticket prom.
@@ -550,6 +567,7 @@ def build_compras_catalogo_workbook_jerarquico(
         filtered_rows=filtered_rows,
         sucursal=sucursal_filtro,
         brand_name=brand_name,
+        skus_con_similar=len(similares_map or {}),
     )
     # Reordenar: memo PRIMERO, después el resto en su orden actual.
     wb._sheets = [memo] + [s for s in wb._sheets if s is not memo]
