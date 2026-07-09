@@ -17,6 +17,7 @@ configuración.
 - [Vista 3 — Salud del catálogo (`GET /catalog-health`)](#vista-3--salud-del-catálogo-get-catalog-health)
 - [Vista 4 — Plan del mes (`GET /plan`)](#vista-4--plan-del-mes-get-plan)
 - [Compras & Catálogo (`GET /analytics/compras-catalogo`)](#compras--catálogo-get-analyticscompras-catalogo)
+- [Evolución en el tiempo (`GET /analytics/evolucion`)](#evolución-en-el-tiempo-get-analyticsevolucion)
 - [Admin — Metas del mes (`/analytics/goals`)](#admin--metas-del-mes-analyticsgoals)
 - [Admin — Category Targets (`/config/category-targets`)](#admin--category-targets-configcategory-targets)
 - [Admin — Variant Costs (`/config/variant-costs`)](#admin--variant-costs-configvariant-costs)
@@ -852,6 +853,90 @@ El Excel incluye la advertencia de similares: columna **"⚠ Similar en tienda"*
 (última, en ámbar) en las pestañas por departamento con el mejor sustituto
 (`PRODUCTO (SKU) · stock und · cob. X días · +N más`), y una línea resumen en el
 🎯 Memo Ejecutivo. Header de respuesta: `X-Skus-Con-Similar`.
+
+---
+
+## Evolución en el tiempo (`GET /analytics/evolucion`)
+
+Serie **mensual** de ventas por dimensión, pensada para **gráficos de líneas /
+áreas apiladas / mix 100%** y tarjetas de tendencia. Responde "¿cómo evolucionó
+cada departamento / categoría / subcategoría / sucursal mes a mes?".
+
+### `GET /analytics/evolucion`
+
+**Query params:**
+
+| Param | Tipo | Default | Notas |
+|---|---|---|---|
+| `dimension` | enum | `departamento` | `departamento` \| `categoria` \| `subcategoria` \| `sucursal` |
+| `meses` | int 3–36 | `12` | Cuántos meses hacia atrás (ventana visible) |
+| `office_id` | int | — | Filtra a una sucursal. Se **ignora** si `dimension=sucursal` |
+| `top` | int 0–50 | `0` | `0` = todas; `N` = deja las N de mayor venta y agrupa el resto como `"Otros"` |
+
+Devuelve un arreglo **long-format**: una fila por `(periodo, dim)`, sin huecos
+(los meses sin venta salen en 0). Ordenado por `periodo`, luego `ventas` desc.
+
+```json
+[
+  {
+    "periodo": "2026-06",          // YYYY-MM
+    "dim": "Hogar y Decoración",   // valor de la dimensión (o "Otros")
+    "ventas": 30320.91,            // S/ (SUM total_amount)
+    "unidades": 7527,
+    "tickets": 812,                // documentos que incluyeron esta dim (ver nota)
+    "ticket_promedio": 37.34,
+    "margen_soles": 7368.6,        // net_amount − unidades×effective_cost
+    "margen_pct": 24.3,
+    "participacion_pct": 22.4,     // % del total del mes (mix); suma ~100 por periodo
+    "crecimiento_mom_pct": 21.5,   // vs mes anterior; null en el 1er mes
+    "crecimiento_yoy_pct": 8.1,    // vs mismo mes año pasado; null si no hay base
+    "skus_activos": 143,           // variantes distintas vendidas
+    "cobertura_costos_pct": 100.0, // % de unidades con costo (margen confiable si ~100)
+    "parcial": false               // true = mes EN CURSO (incompleto) → dibujar punteado
+  }
+]
+```
+
+**Cómo graficar:**
+- **Líneas / áreas apiladas por evolución**: pivotear `dim` sobre el eje `periodo`, valor `ventas` (o `unidades`).
+- **Mix 100% (cómo cambia la mezcla)**: usar `participacion_pct` en área apilada al 100%.
+- **Mes en curso**: la última fila trae `parcial: true` — dibujarla con línea punteada o rotularla "en curso"; **nunca** leerla como caída (solo lleva los días transcurridos del mes).
+- **Margen**: si `cobertura_costos_pct` es bajo (<90), advertir que el margen puede estar distorsionado (mismo criterio que `meta.cobertura_costos`).
+
+> **Nota `tickets` / `skus_activos`**: son conteos **por dimensión** (un ticket que
+> toca 2 categorías cuenta en ambas). En el bucket `"Otros"` (cuando `top>0`) estos
+> dos campos se suman, así que pueden sobre-contar tickets compartidos; `ventas`,
+> `unidades` y `margen_soles` sí son exactos.
+
+### `GET /analytics/evolucion/resumen`
+
+Mismos params. Devuelve **una tarjeta de análisis por dimensión** (ordenadas por
+venta total desc). Los cálculos de tendencia/crecimiento usan solo meses
+**completos** (excluyen el mes en curso).
+
+```json
+[
+  {
+    "dim": "Librería y Oficina",
+    "venta_total": 520415.42,          // incluye el mes parcial (venta real acumulada)
+    "tendencia": "CRECIENDO",          // CRECIENDO | ESTABLE | DECAYENDO (1ª vs 2ª mitad)
+    "crecimiento_periodo_pct": 144.5,  // primer vs último mes COMPLETO
+    "participacion_actual_pct": 3.7,   // % del último mes completo
+    "aporte_al_crecimiento_pct": 8.3,  // cuánto del crecimiento total del negocio explica; suma ~100
+    "mejor_mes": {"periodo": "2026-03", "ventas": 356603.53},
+    "peor_mes":  {"periodo": "2025-10", "ventas": 1532.7},
+    "margen_pct_actual": 31.2,
+    "periodo_actual": "2026-06"        // último mes completo usado como referencia
+  }
+]
+```
+
+Ideal para: chips de "▲ creciendo / ▼ cayendo" junto a cada línea del gráfico, y
+para ordenar el foco por `aporte_al_crecimiento_pct` (quién mueve la aguja).
+
+> **Rendimiento**: la consulta escanea toda la ventana (hasta 24 meses reales para
+> poblar el YoY). Con el volumen actual responde en ~3–10 s según la dimensión;
+> conviene cachear en el frontend por `(dimension, meses, office_id)`.
 
 ---
 

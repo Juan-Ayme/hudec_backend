@@ -17,7 +17,7 @@ FECHAS / ZONA HORARIA (corregido 2026-06-01):
 import io
 import math
 from calendar import monthrange
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import Depends, APIRouter, HTTPException, Path, Query
@@ -342,6 +342,295 @@ async def sales_by_category(
 #     """
 #     res = await db.execute(text(query), params)
 #     return [dict(r) for r in res.mappings().all()]
+
+
+# ============================================================================
+# EVOLUCIÓN EN EL TIEMPO (series mensuales por dimensión) — para gráficos.
+#   GET /analytics/evolucion          -> serie mensual long-format por dimensión
+#   GET /analytics/evolucion/resumen  -> análisis/tendencia por dimensión
+# ============================================================================
+
+# Whitelist de dimensiones -> expresión de columna. La dimensión NUNCA se
+# interpola desde texto libre del usuario: solo puede tomar una de estas claves.
+_DIM_EXPR: dict[str, str] = {
+    "departamento": "vpf.department",
+    "categoria":    "vpf.category",
+    "subcategoria": "vpf.subcategory",
+    "sucursal":     "o.name",
+}
+
+
+def _month_window(meses: int) -> tuple[date, date, date, str]:
+    """Devuelve (dfrom, dfrom_ext, dto, periodo_from) para una ventana mensual.
+
+    - dfrom       = primer día del mes de hace (meses-1) meses (inicio visible).
+    - dfrom_ext   = 12 meses antes de dfrom (para que el YoY tenga base).
+    - dto         = primer día del mes SIGUIENTE al actual (fin exclusivo).
+    - periodo_from= 'YYYY-MM' del primer mes visible (recorte final de la serie).
+    """
+    today = date.today()
+    dto = date(today.year + today.month // 12, today.month % 12 + 1, 1)
+    idx = today.year * 12 + (today.month - 1) - (meses - 1)
+    dfrom = date(idx // 12, idx % 12 + 1, 1)
+    idx_ext = idx - 12
+    dfrom_ext = date(idx_ext // 12, idx_ext % 12 + 1, 1)
+    return dfrom, dfrom_ext, dto, dfrom.strftime("%Y-%m")
+
+
+async def _evolucion_serie(
+    db: AsyncSession,
+    cid: int,
+    dimension: str,
+    meses: int,
+    office_id: int | None,
+    top: int,
+    tipos_venta: list[int],
+) -> list[dict]:
+    """Serie mensual por dimensión (ventana visible), sin huecos.
+
+    Trae 12 meses extra hacia atrás para poblar `crecimiento_yoy_pct` y recorta
+    la salida a la ventana visible. Reutiliza el patrón de fechas/joins de
+    `sales_by_department`.
+    """
+    if dimension not in _DIM_EXPR:  # guardia interna; el endpoint ya devuelve 400
+        raise KeyError(dimension)
+    dfrom, dfrom_ext, dto, periodo_from = _month_window(meses)
+    # BSale guarda emission_date a MEDIANOCHE UTC, así que la fecha calendario `d`
+    # equivale al timestamptz `d 00:00:00+00`. Comparar la columna cruda contra
+    # límites timestamptz (en vez de (emission_date AT TIME ZONE 'UTC')::DATE, que
+    # es una función sobre cada fila) es SARGABLE y usa idx_documents_emission.
+    dfrom_ext_ts = datetime(dfrom_ext.year, dfrom_ext.month, dfrom_ext.day, tzinfo=timezone.utc)
+    dto_ts = datetime(dto.year, dto.month, dto.day, tzinfo=timezone.utc)
+
+    # Fuente de la dimensión:
+    #  - taxonomía (departamento/categoria/subcategoria): se precalcula un mapa
+    #    producto->dim UNA vez sobre v_products_full (~miles de productos) y se une
+    #    a los detalles, en vez de expandir el view de 5 tablas por cada línea.
+    #  - sucursal: la dim sale de offices (join a documents); no toca el catálogo.
+    if dimension == "sucursal":
+        prod_dim_cte = ""
+        dim_join = ("JOIN offices o ON o.bsale_office_id = doc.bsale_office_id "
+                    "AND o.company_id = doc.company_id")
+        dim_select = "o.name"
+        office_filter = _OFFICE_FILTER_DOC  # muestra todas las activas; ignora office_id
+    else:
+        vpf_col = {"departamento": "department", "categoria": "category",
+                   "subcategoria": "subcategory"}[dimension]
+        prod_dim_cte = (
+            "prod_dim AS MATERIALIZED (\n"
+            f"            SELECT bsale_product_id, {vpf_col} AS dim\n"
+            "            FROM v_products_full\n"
+            f"            WHERE company_id = :cid AND {vpf_col} IS NOT NULL\n"
+            "        ),\n        ")
+        dim_join = ("JOIN variants v   ON v.bsale_variant_id = dd.bsale_variant_id AND v.company_id = dd.company_id\n"
+                    "            JOIN prod_dim pd  ON pd.bsale_product_id = v.bsale_product_id")
+        dim_select = "pd.dim"
+        office_filter = "doc.bsale_office_id = :office_id" if office_id is not None else _OFFICE_FILTER_DOC
+
+    params: dict[str, Any] = {
+        "cid": cid, "dfrom_ext": dfrom_ext, "dto": dto,
+        "dfrom_ext_ts": dfrom_ext_ts, "dto_ts": dto_ts,
+        "periodo_from": periodo_from, "tipos_venta": tipos_venta, "top": top,
+    }
+    if dimension != "sucursal" and office_id is not None:
+        params["office_id"] = office_id
+
+    query = f"""
+        WITH {prod_dim_cte}agg AS MATERIALIZED (   -- ÚNICO scan de las tablas base (ventana extendida p/ YoY)
+            SELECT TO_CHAR(doc.emission_date AT TIME ZONE '{_TZ}', 'YYYY-MM') AS periodo,
+                   {dim_select}                                               AS dim,
+                   SUM(dd.total_amount)                                        AS ventas,
+                   SUM(dd.quantity)                                           AS unidades,
+                   COUNT(DISTINCT doc.bsale_document_id)                      AS tickets,
+                   SUM(dd.net_amount - dd.quantity * COALESCE(vc.effective_cost, 0)) AS margen_soles,
+                   SUM(dd.net_amount)                                         AS neto,
+                   COUNT(DISTINCT dd.bsale_variant_id)                        AS skus_activos,
+                   SUM(CASE WHEN vc.effective_cost IS NOT NULL THEN dd.quantity ELSE 0 END) AS unds_con_costo
+            FROM document_details dd
+            JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
+            {dim_join}
+            LEFT JOIN variant_costs vc ON vc.company_id = dd.company_id AND vc.bsale_variant_id = dd.bsale_variant_id
+            WHERE dd.company_id = :cid
+              AND doc.emission_date >= :dfrom_ext_ts
+              AND doc.emission_date <  :dto_ts
+              AND COALESCE(doc.is_credit_note, FALSE) = FALSE
+              AND doc.bsale_document_type_id = ANY(:tipos_venta)
+              AND {office_filter}
+            GROUP BY periodo, dim
+        ),
+        top_dims AS (        -- ranking sobre la ventana VISIBLE, derivado de agg (sin re-scan)
+            SELECT dim FROM agg
+            WHERE periodo >= :periodo_from
+            GROUP BY dim
+            ORDER BY SUM(ventas) DESC
+            LIMIT :top
+        ),
+        bucketed AS (        -- colapsa dimensiones fuera del top-N en 'Otros' (top=0 => todas)
+            SELECT periodo,
+                   CASE WHEN :top = 0 OR dim IN (SELECT dim FROM top_dims)
+                        THEN dim ELSE 'Otros' END AS dim,
+                   SUM(ventas)         AS ventas,
+                   SUM(unidades)       AS unidades,
+                   SUM(tickets)        AS tickets,
+                   SUM(margen_soles)   AS margen_soles,
+                   SUM(neto)           AS neto,
+                   SUM(skus_activos)   AS skus_activos,
+                   SUM(unds_con_costo) AS unds_con_costo
+            FROM agg
+            GROUP BY 1, 2
+        ),
+        spine AS (           -- todos los (periodo, dim): evita huecos en la línea
+            SELECT TO_CHAR(gs, 'YYYY-MM') AS periodo, d.dim
+            FROM generate_series(CAST(:dfrom_ext AS date),
+                                 CAST(:dto AS date) - interval '1 day',
+                                 interval '1 month') gs
+            CROSS JOIN (SELECT DISTINCT dim FROM bucketed) d
+        ),
+        serie AS (
+            SELECT s.periodo, s.dim,
+                   COALESCE(b.ventas, 0)       AS ventas,
+                   COALESCE(b.unidades, 0)     AS unidades,
+                   COALESCE(b.tickets, 0)      AS tickets,
+                   COALESCE(b.margen_soles, 0) AS margen_soles,
+                   b.neto, b.skus_activos, b.unds_con_costo
+            FROM spine s
+            LEFT JOIN bucketed b USING (periodo, dim)
+        )
+        SELECT periodo, dim,
+               ROUND(ventas::numeric, 2)                                        AS ventas,
+               COALESCE(unidades, 0)                                            AS unidades,
+               COALESCE(tickets, 0)                                             AS tickets,
+               ROUND((ventas / NULLIF(tickets, 0))::numeric, 2)                 AS ticket_promedio,
+               ROUND(margen_soles::numeric, 2)                                  AS margen_soles,
+               ROUND((100.0 * margen_soles / NULLIF(neto, 0))::numeric, 1)      AS margen_pct,
+               ROUND((100.0 * ventas
+                      / NULLIF(SUM(ventas) OVER (PARTITION BY periodo), 0))::numeric, 1) AS participacion_pct,
+               ROUND((100.0 * (ventas - LAG(ventas, 1)  OVER w)
+                      / NULLIF(LAG(ventas, 1)  OVER w, 0))::numeric, 1)          AS crecimiento_mom_pct,
+               ROUND((100.0 * (ventas - LAG(ventas, 12) OVER w)
+                      / NULLIF(LAG(ventas, 12) OVER w, 0))::numeric, 1)         AS crecimiento_yoy_pct,
+               COALESCE(skus_activos, 0)                                        AS skus_activos,
+               ROUND((100.0 * unds_con_costo / NULLIF(unidades, 0))::numeric, 1) AS cobertura_costos_pct
+        FROM serie
+        WINDOW w AS (PARTITION BY dim ORDER BY periodo)
+    """
+    # La ventana extendida (12 meses extra) solo alimenta el YoY; se recorta a la
+    # ventana visible en un wrapper (los cálculos LAG/participación ya están hechos).
+    query = f"""
+        SELECT * FROM ({query}) t
+        WHERE periodo >= :periodo_from
+        ORDER BY periodo, ventas DESC
+    """
+    res = await db.execute(text(query), params)
+    rows = [dict(r) for r in res.mappings().all()]
+    # El mes en curso está INCOMPLETO: se marca `parcial` para que el frontend lo
+    # dibuje distinto (línea punteada) y no lo lea como una caída real.
+    mes_actual = date.today().strftime("%Y-%m")
+    for r in rows:
+        r["parcial"] = r["periodo"] == mes_actual
+    return rows
+
+
+@router.get("/evolucion")
+async def evolucion(
+    dimension: str = Query("departamento"),
+    meses: int = Query(12, ge=3, le=36),
+    office_id: int | None = Query(None),
+    top: int = Query(0, ge=0, le=50),
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """Serie mensual por dimensión (departamento/categoria/subcategoria/sucursal).
+
+    Long-format: una fila por (periodo, dim) con métricas ricas listas para
+    graficar líneas/áreas apiladas, mix 100% y crecimiento MoM/YoY.
+    """
+    if dimension not in _DIM_EXPR:
+        raise HTTPException(status_code=400,
+                            detail=f"dimension inválida; use una de {list(_DIM_EXPR)}")
+    cid = company.company_id
+    company_config = await get_company(db, cid)
+    tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+    return await _evolucion_serie(db, cid, dimension, meses, office_id, top, tipos_venta)
+
+
+@router.get("/evolucion/resumen")
+async def evolucion_resumen(
+    dimension: str = Query("departamento"),
+    meses: int = Query(12, ge=3, le=36),
+    office_id: int | None = Query(None),
+    top: int = Query(0, ge=0, le=50),
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """Análisis/tendencia por dimensión: una tarjeta resumen por cada valor.
+
+    Deriva la tendencia y los agregados de la misma serie mensual de /evolucion.
+    """
+    if dimension not in _DIM_EXPR:
+        raise HTTPException(status_code=400,
+                            detail=f"dimension inválida; use una de {list(_DIM_EXPR)}")
+    cid = company.company_id
+    company_config = await get_company(db, cid)
+    tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+    serie = await _evolucion_serie(db, cid, dimension, meses, office_id, top, tipos_venta)
+    if not serie:
+        return []
+
+    # Los cálculos de tendencia/crecimiento usan solo meses COMPLETOS (se excluye
+    # el mes en curso, marcado `parcial`), para no leer el mes a medias como caída.
+    completos = sorted({r["periodo"] for r in serie if not r["parcial"]})
+    if not completos:  # ventana tan corta que solo cae el mes en curso
+        completos = sorted({r["periodo"] for r in serie})
+    primer_periodo, ultimo_periodo = completos[0], completos[-1]
+
+    # Totales por periodo completo (participación) y delta del negocio (aporte).
+    total_por_periodo: dict[str, float] = {p: 0.0 for p in completos}
+    for r in serie:
+        if r["periodo"] in total_por_periodo:
+            total_por_periodo[r["periodo"]] += float(r["ventas"] or 0)
+    total_delta = total_por_periodo[ultimo_periodo] - total_por_periodo[primer_periodo]
+
+    por_dim: dict[str, list[dict]] = {}
+    for r in serie:
+        por_dim.setdefault(r["dim"], []).append(r)
+
+    resumen: list[dict] = []
+    for dim, filas in por_dim.items():
+        completas = sorted((f for f in filas if f["periodo"] in total_por_periodo),
+                           key=lambda x: x["periodo"])
+        ventas = [float(f["ventas"] or 0) for f in completas]
+        venta_total = sum(float(f["ventas"] or 0) for f in filas)  # incluye el mes parcial (venta real)
+        primer, ultimo = ventas[0], ventas[-1]
+        # Tendencia: 1ª mitad vs 2ª mitad de los meses completos (patrón 04h).
+        mitad = len(ventas) // 2 or 1
+        s1, s2 = sum(ventas[:mitad]), sum(ventas[mitad:])
+        if s1 <= 0:
+            tendencia = "CRECIENDO" if s2 > 0 else "ESTABLE"
+        elif s2 > s1 * 1.10:
+            tendencia = "CRECIENDO"
+        elif s2 < s1 * 0.90:
+            tendencia = "DECAYENDO"
+        else:
+            tendencia = "ESTABLE"
+        mejor = max(completas, key=lambda x: float(x["ventas"] or 0))
+        peor = min(completas, key=lambda x: float(x["ventas"] or 0))
+        fila_ultimo = next((f for f in completas if f["periodo"] == ultimo_periodo), None)
+        tot_ult = total_por_periodo[ultimo_periodo]
+        resumen.append({
+            "dim": dim,
+            "venta_total": round(venta_total, 2),
+            "tendencia": tendencia,
+            "crecimiento_periodo_pct": round((ultimo - primer) / primer * 100, 1) if primer else None,
+            "participacion_actual_pct": round(ultimo / tot_ult * 100, 1) if tot_ult else None,
+            "aporte_al_crecimiento_pct": round((ultimo - primer) / total_delta * 100, 1) if total_delta else None,
+            "mejor_mes": {"periodo": mejor["periodo"], "ventas": float(mejor["ventas"] or 0)},
+            "peor_mes": {"periodo": peor["periodo"], "ventas": float(peor["ventas"] or 0)},
+            "margen_pct_actual": (fila_ultimo or {}).get("margen_pct"),
+            "periodo_actual": ultimo_periodo,  # último mes COMPLETO usado como referencia
+        })
+    resumen.sort(key=lambda x: x["venta_total"], reverse=True)
+    return resumen
 
 
 @router.get("/top-products")
