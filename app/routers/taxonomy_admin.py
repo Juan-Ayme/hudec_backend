@@ -639,6 +639,93 @@ async def bootstrap_taxonomy(
                           warnings=[], extra={"stats": stats})
 
 
+@router.delete("/all")
+async def wipe_taxonomy(
+    confirm: str,
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Borra TODA la taxonomía (departments/categories/subcategories) de la empresa.
+
+    Uso: `DELETE /taxonomy/all?confirm=LIMPIAR`.
+
+    Efectos:
+      - Deptos / cats / subs: ELIMINADOS.
+      - products.subcategory_id → NULL (los productos quedan sin clasificar).
+      - product_types.subcategory_id → NULL (los tipos quedan sin mapear).
+      - category_targets: ELIMINADOS en cascada (metas por categoría).
+      - products, product_types, ventas históricas: NO se tocan.
+
+    Nota: se hacen 2 UPDATE previos para evitar la violación NOT NULL que
+    produciría el CASCADE sobre las FK compuestas (company_id, subcategory_id)
+    declaradas con ON DELETE SET NULL sin lista de columnas.
+    """
+    if confirm != "LIMPIAR":
+        raise HTTPException(400, "Falta ?confirm=LIMPIAR — endpoint destructivo.")
+
+    cid = company.company_id
+
+    counts_before: dict[str, int] = {}
+    for tbl in ("departments", "categories", "subcategories", "category_targets"):
+        r = await db.execute(
+            text(f"SELECT COUNT(*) FROM {tbl} WHERE company_id = :c"), {"c": cid}
+        )
+        counts_before[tbl] = r.scalar() or 0
+
+    r = await db.execute(
+        text("SELECT COUNT(*) FROM products WHERE company_id = :c AND subcategory_id IS NOT NULL"),
+        {"c": cid},
+    )
+    n_prod_override = r.scalar() or 0
+    r = await db.execute(
+        text("SELECT COUNT(*) FROM product_types WHERE company_id = :c AND subcategory_id IS NOT NULL"),
+        {"c": cid},
+    )
+    n_pt_mapped = r.scalar() or 0
+
+    await db.execute(
+        text("UPDATE products SET subcategory_id = NULL "
+             "WHERE company_id = :c AND subcategory_id IS NOT NULL"),
+        {"c": cid},
+    )
+    await db.execute(
+        text("UPDATE product_types SET subcategory_id = NULL "
+             "WHERE company_id = :c AND subcategory_id IS NOT NULL"),
+        {"c": cid},
+    )
+    await db.execute(text("DELETE FROM departments WHERE company_id = :c"), {"c": cid})
+    await db.commit()
+
+    warnings: list[str] = []
+    if counts_before["category_targets"] > 0:
+        warnings.append(
+            f"Se borraron {counts_before['category_targets']} metas por categoría (category_targets)."
+        )
+
+    total_rows = (
+        counts_before["departments"]
+        + counts_before["categories"]
+        + counts_before["subcategories"]
+        + counts_before["category_targets"]
+    )
+    return await _report(
+        "wipe_taxonomy",
+        entity=None,
+        rows=total_rows,
+        warnings=warnings,
+        extra={
+            "stats": {
+                "departments_deleted": counts_before["departments"],
+                "categories_deleted": counts_before["categories"],
+                "subcategories_deleted": counts_before["subcategories"],
+                "category_targets_deleted": counts_before["category_targets"],
+                "products_desclassified": n_prod_override,
+                "product_types_unmapped": n_pt_mapped,
+            }
+        },
+    )
+
+
 @router.get("/export")
 async def export_taxonomy(
     company: CurrentCompany = Depends(get_current_company),
