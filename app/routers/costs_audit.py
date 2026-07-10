@@ -22,8 +22,15 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_current_company, require_operador_or_admin
+from app.auth import (
+    CurrentCompany,
+    CurrentUser,
+    get_current_company,
+    get_current_user,
+    require_operador_or_admin,
+)
 from app.database import get_db
+from app.events import log_event
 
 
 router = APIRouter(
@@ -132,6 +139,8 @@ async def audit(db: AsyncSession = Depends(get_db)) -> dict:
 @router.post("/backfill-from-receptions", dependencies=[Depends(require_operador_or_admin)])
 async def backfill_from_receptions(
     dry_run: bool = Query(True, description="Si true, NO escribe — solo reporta qué cambiaría."),
+    company: CurrentCompany = Depends(get_current_company),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Para cada variante con `effective_cost=0`, calcula:
@@ -224,6 +233,12 @@ async def backfill_from_receptions(
                     "src": c["cost_source"],
                 },
             )
+        await log_event(
+            db, company_id=company.company_id, event_type="config.updated",
+            actor_user_id=user.id,
+            payload={"que": "variant_costs_backfill", "actualizados": len(cambios)},
+            commit=False,
+        )
         await db.commit()
 
     return {

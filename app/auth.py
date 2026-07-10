@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("kawii.auth")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

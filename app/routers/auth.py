@@ -17,10 +17,11 @@ Requieren header X-Company-Id y rol 'admin' en esa empresa:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,9 @@ from app.auth import (
     verify_password,
 )
 from app.database import get_db
+from app.events import log_event
+
+logger = logging.getLogger("kawii.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -122,9 +126,13 @@ async def _list_user_companies(
 
 @router.post("/login")
 async def login(
-    body: LoginBody, response: Response, db: AsyncSession = Depends(get_db)
+    body: LoginBody,
+    response: Response,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Valida credenciales, setea cookie httpOnly y devuelve user + companies."""
+    client_ip = request.client.host if request.client else None
     row = (
         await db.execute(
             text(
@@ -135,11 +143,29 @@ async def login(
         )
     ).mappings().first()
     if not row or not verify_password(body.password, row["password_hash"]):
+        logger.warning(
+            "Login fallido (credenciales inválidas): username=%s ip=%s",
+            body.username, client_ip,
+        )
+        # Login es pre-empresa: no hay company activa → solo log estructurado.
+        await log_event(
+            db, company_id=None, event_type="auth.login.failure",
+            payload={"username": body.username, "reason": "bad_credentials", "ip": client_ip},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuario o contraseña incorrectos",
         )
     if not row["is_active"]:
+        logger.warning(
+            "Login rechazado (usuario desactivado): username=%s user_id=%s ip=%s",
+            row["username"], row["id"], client_ip,
+        )
+        await log_event(
+            db, company_id=None, event_type="auth.login.failure",
+            actor_user_id=row["id"],
+            payload={"username": row["username"], "reason": "disabled", "ip": client_ip},
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Usuario desactivado"
         )
@@ -155,8 +181,29 @@ async def login(
             {"id": row["id"]},
         )
         await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        # No es crítico: el login sigue siendo válido aunque no se actualice
+        # el timestamp. Antes se tragaba en silencio; ahora deja rastro.
+        logger.warning(
+            "No se pudo actualizar last_login_at para user_id=%s: %s",
+            row["id"], exc,
+        )
+
+    logger.info(
+        "Login exitoso: username=%s user_id=%s empresas=%d ip=%s",
+        row["username"], row["id"], len(companies), client_ip,
+    )
+    # company_id=None: en login aún no hay empresa activa (se elige después vía
+    # X-Company-Id). El evento queda como log estructurado con el actor.
+    await log_event(
+        db, company_id=None, event_type="auth.login.success",
+        actor_user_id=row["id"],
+        payload={
+            "username": row["username"],
+            "ip": client_ip,
+            "companies": [c.id for c in companies],
+        },
+    )
 
     return {
         "ok": True,
@@ -171,10 +218,18 @@ async def login(
 
 @router.post("/logout")
 async def logout(
-    response: Response, _user: CurrentUser = Depends(get_current_user)
+    response: Response,
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Limpia la cookie de sesión."""
     clear_session_cookie(response)
+    logger.info("Logout: username=%s user_id=%s", user.username, user.id)
+    # company_id=None: logout no está scopeado a empresa → solo log estructurado.
+    await log_event(
+        db, company_id=None, event_type="auth.logout",
+        actor_user_id=user.id, payload={"username": user.username},
+    )
     return {"ok": True, "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
@@ -240,6 +295,7 @@ async def list_users(
 @router.post("/users", status_code=201)
 async def create_user(
     body: CreateUserBody,
+    actor: CurrentUser = Depends(get_current_user),
     company: CurrentCompany = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -267,12 +323,29 @@ async def create_user(
             ),
             {"uid": user_row["id"], "cid": company.company_id, "r": body.role},
         )
+        # Auditoría en la MISMA transacción (commit=False): la persiste el commit
+        # de abajo. Sin secretos: solo actor, target y rol.
+        await log_event(
+            db, company_id=company.company_id, event_type="auth.user.created",
+            actor_user_id=actor.id,
+            payload={
+                "actor": actor.username,
+                "target_user_id": user_row["id"],
+                "target_username": body.username.strip(),
+                "role": body.role,
+            },
+            commit=False,
+        )
         await db.commit()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No se pudo crear el usuario: {exc}",
         )
+    logger.info(
+        "Usuario creado: target_id=%s target=%s role=%s por actor=%s en company=%s",
+        user_row["id"], body.username.strip(), body.role, actor.username, company.company_id,
+    )
     return {
         "ok": True,
         "id": user_row["id"],
@@ -344,7 +417,32 @@ async def update_user(
                 status_code=404, detail=f"Usuario {user_id} no existe"
             )
 
+    # Auditoría: qué campos cambiaron (NUNCA el password, solo la bandera de que
+    # se cambió). Se persiste con el commit de abajo (commit=False).
+    changed = []
+    if body.role is not None:
+        changed.append("role")
+    if body.is_active is not None:
+        changed.append("is_active")
+    if body.password is not None:
+        changed.append("password")
+    await log_event(
+        db, company_id=company.company_id, event_type="auth.user.updated",
+        actor_user_id=user.id,
+        payload={
+            "actor": user.username,
+            "target_user_id": user_id,
+            "changed": changed,
+            "role": body.role,
+            "is_active": body.is_active,
+        },
+        commit=False,
+    )
     await db.commit()
+    logger.info(
+        "Usuario actualizado: target_id=%s cambios=%s por actor=%s en company=%s",
+        user_id, changed, user.username, company.company_id,
+    )
     return {"ok": True, "id": user_id, "company_id": company.company_id}
 
 
@@ -404,7 +502,21 @@ async def delete_user(
             status_code=404,
             detail=f"El usuario {user_id} no es miembro de esta empresa",
         )
+    await log_event(
+        db, company_id=company.company_id, event_type="auth.user.deleted",
+        actor_user_id=user.id,
+        payload={
+            "actor": user.username,
+            "target_user_id": user_id,
+            "target_role": target_role,
+        },
+        commit=False,
+    )
     await db.commit()
+    logger.info(
+        "Membresía removida: target_id=%s por actor=%s en company=%s",
+        user_id, user.username, company.company_id,
+    )
     return {
         "ok": True,
         "removed_user_id": user_id,

@@ -4,8 +4,9 @@ from collections.abc import AsyncGenerator
 
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("kawii.db")
 
 load_dotenv()
 
@@ -46,5 +47,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_maker() as session:
         try:
             yield session
+        except StarletteHTTPException:
+            # 401/403/404/... son control de flujo HTTP normal, no fallos de DB:
+            # se re-levantan sin ruido de traceback.
+            raise
+        except Exception:
+            # Errores reales durante el request (SQL, conexión rota, bug):
+            # dejan traceback correlacionado por el filtro de contexto.
+            logger.exception("Error no controlado durante la sesión de base de datos")
+            raise
         finally:
             await session.close()

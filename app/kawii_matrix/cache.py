@@ -76,6 +76,10 @@ async def get_or_compute(
     now = time.monotonic()
     entry = _store.get(key)
     if entry is not None and entry[0] > now:
+        logger.debug(
+            "Matrix cache HIT módulo=%s company=%s (%d filas)",
+            module_id, company_id, len(entry[2]),
+        )
         return entry[1], entry[2]
 
     lock = _get_lock(key)
@@ -85,6 +89,10 @@ async def get_or_compute(
         now = time.monotonic()
         entry = _store.get(key)
         if entry is not None and entry[0] > now:
+            logger.debug(
+                "Matrix cache HIT (tras lock) módulo=%s company=%s (%d filas)",
+                module_id, company_id, len(entry[2]),
+            )
             return entry[1], entry[2]
 
         columns, rows = await compute()

@@ -8,6 +8,8 @@ y los nombres de las columnas se mapean según la configuración de marca.
 
 from __future__ import annotations
 
+import logging
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -16,6 +18,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.kawii_matrix import cache as matrix_cache
+
+logger = logging.getLogger("kawii.matrix")
 
 # Ruta absoluta a la carpeta sql/
 _SQL_DIR = Path(__file__).parent / "sql"
@@ -151,10 +155,13 @@ def _get_query_params() -> dict:
     }
 
 
-async def _execute_query_to_dicts(db: AsyncSession, company_id: int, sql: str) -> tuple[list[str], list[dict]]:
+async def _execute_query_to_dicts(
+    db: AsyncSession, company_id: int, sql: str, *, module_id: str | None = None
+) -> tuple[list[str], list[dict]]:
     """Ejecuta una consulta SQL parametrizada y mapea sus columnas de clasificación dinámicamente.
 
     Multi-tenant: el parámetro `:company_id` se inyecta en todas las CTEs base.
+    `module_id` es opcional y solo se usa para enriquecer los logs.
     """
     settings = get_settings()
     params = _get_query_params()
@@ -176,8 +183,14 @@ async def _execute_query_to_dicts(db: AsyncSession, company_id: int, sql: str) -
         #   guardado en la UI manda sobre los valores del .env. Si no hay nada
         #   en DB, los valores del .env se conservan (degradación segura).
         await apply_db_overrides(db, company_id, params)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Degradación segura: si no se pueden resolver exclusiones/overrides,
+        # quedan los placeholders vacíos (no excluye / no estacional). Dejamos
+        # rastro para no perder la causa (antes se tragaba en silencio).
+        logger.warning(
+            "No se resolvieron exclusiones/overrides (módulo=%s company=%s): %s; se usan defaults",
+            module_id, company_id, exc,
+        )
 
     # ★ MULTI-TENANT (RLS): activa el filtro por empresa para esta transacción.
     # RLS habilitado en TODAS las tablas con company_id filtra automáticamente
@@ -198,12 +211,21 @@ async def _execute_query_to_dicts(db: AsyncSession, company_id: int, sql: str) -
     # fecha (última venta, días sin venta, agrupación diaria) se corría un día atrás.
     await db.execute(text("SET LOCAL timezone = 'UTC'"))
 
-    result = await db.execute(text(sql), params)
-    
-    raw_columns = list(result.keys())
+    t0 = time.perf_counter()
+    try:
+        result = await db.execute(text(sql), params)
+        raw_columns = list(result.keys())
+        raw_rows = result.fetchall()
+    except Exception:
+        logger.exception(
+            "Error ejecutando SQL de matriz (módulo=%s company=%s)",
+            module_id, company_id,
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
     columns = [settings.CLASSIFICATION_LABEL if col == "Clasificación" else col for col in raw_columns]
-    raw_rows = result.fetchall()
-    
+
     rows: list[dict] = []
     for row in raw_rows:
         row_dict = {}
@@ -211,7 +233,11 @@ async def _execute_query_to_dicts(db: AsyncSession, company_id: int, sql: str) -
             target_col = settings.CLASSIFICATION_LABEL if col_name == "Clasificación" else col_name
             row_dict[target_col] = val
         rows.append(row_dict)
-        
+
+    logger.info(
+        "Matrix query módulo=%s company=%s filas=%d %.1fms",
+        module_id or "?", company_id, len(rows), elapsed_ms,
+    )
     return columns, rows
 
 
@@ -256,7 +282,7 @@ async def run_matrix(
         module_id,
         company_id,
         settings.MATRIX_CACHE_TTL_SECONDS,
-        lambda: _execute_query_to_dicts(db, company_id, sql),
+        lambda: _execute_query_to_dicts(db, company_id, sql, module_id=module_id),
     )
 
     # ---- Filtros (case-insensitive containment para texto) ----
@@ -352,7 +378,7 @@ async def get_distribution(
     Útil para dashboards: cuántos productos en cada categoría.
     """
     sql = _load_sql(module_id)
-    columns, rows = await _execute_query_to_dicts(db, company_id, sql)
+    columns, rows = await _execute_query_to_dicts(db, company_id, sql, module_id=module_id)
     settings = get_settings()
 
     # Detectar columna de clasificación (varía por módulo)
@@ -396,7 +422,7 @@ async def get_transfers(db: AsyncSession, company_id: int, module_id: str = "04"
         raise ValueError("Sugerencia Transferencia solo disponible en módulos 04 y 05")
 
     sql = _load_sql(module_id)
-    columns, rows = await _execute_query_to_dicts(db, company_id, sql)
+    columns, rows = await _execute_query_to_dicts(db, company_id, sql, module_id=module_id)
     if "Sugerencia Transferencia" not in columns:
         raise RuntimeError(f"Módulo {module_id} no tiene columna 'Sugerencia Transferencia'")
 
@@ -508,7 +534,7 @@ async def get_action_groups(db: AsyncSession, company_id: int, module_id: str = 
     Útil para el dashboard ejecutivo.
     """
     sql = _load_sql(module_id)
-    columns, rows = await _execute_query_to_dicts(db, company_id, sql)
+    columns, rows = await _execute_query_to_dicts(db, company_id, sql, module_id=module_id)
 
     label_col = find_label_column(columns)
     if not label_col:
@@ -535,7 +561,7 @@ async def get_summary(db: AsyncSession, company_id: int) -> dict[str, Any]:
     Útil para mostrar en una tarjeta del dashboard.
     """
     sql = _load_sql("04")
-    columns, rows = await _execute_query_to_dicts(db, company_id, sql)
+    columns, rows = await _execute_query_to_dicts(db, company_id, sql, module_id="04")
     settings = get_settings()
 
     by_branch: dict[str, dict] = {}

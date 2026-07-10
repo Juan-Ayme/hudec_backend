@@ -24,6 +24,7 @@ de umbrales en tiempo real sin trip al backend. Un script de paridad
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -35,6 +36,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentCompany, get_current_company
 from app.database import get_db
+
+logger = logging.getLogger("kawii.matrix")
 
 # Métricas crudas por SKU (debugger de la clasificación). Aunque solo lee,
 # expone composición de ventas / lote / lifetime de productos individuales:
@@ -162,8 +165,13 @@ async def get_sku_detail(
         params["excluded_departments"] = excl["departments"]
         params["excluded_categories"] = excl["categories"]
         params["seasonal_departments"] = await get_seasonal(db, cid)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Degradación segura: sin exclusiones el SKU igual se resuelve. Log para
+        # no perder la causa (antes se tragaba en silencio).
+        logger.warning(
+            "No se cargaron exclusiones para sku-detail (company=%s sku=%s): %s",
+            cid, sku, exc,
+        )
 
     # Mismos SET LOCALs que la matriz: forzar hash joins (50x) y leer fechas en UTC.
     await db.execute(text("SET LOCAL enable_nestloop = off"))

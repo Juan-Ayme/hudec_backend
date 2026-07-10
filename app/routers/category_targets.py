@@ -46,8 +46,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from analytics.core.config import OFFICE_IDS
-from app.auth import CurrentCompany, get_current_company, get_current_user, require_operador_or_admin
+from app.auth import CurrentCompany, CurrentUser, get_current_company, get_current_user, require_operador_or_admin
 from app.database import get_db
+from app.events import log_event
 from app.routers.config_admin import get_company
 from app.routers.diagnosis import _load_exclusions, _TZ_DATE
 from harvester.config import TIPOS_VENTA as DEFAULT_TIPOS_VENTA
@@ -321,6 +322,7 @@ async def preview_bootstrap(
 async def bootstrap(
     force: bool = Query(False, description="Si true, BORRA todo lo existente y carga de cero."),
     company_ctx: CurrentCompany = Depends(get_current_company),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Carga inicial automática. Por defecto solo corre si la tabla está vacía.
@@ -376,6 +378,16 @@ async def bootstrap(
                 "nota":                item["nota"],
             },
         )
+    await log_event(
+        db, company_id=cid, event_type="config.updated", actor_user_id=user.id,
+        payload={
+            "que": "category_targets_bootstrap",
+            "force": force,
+            "filas_insertadas": len(sugeridos),
+            "filas_borradas": existentes if force else 0,
+        },
+        commit=False,
+    )
     await db.commit()
 
     return {
@@ -390,6 +402,8 @@ async def bootstrap(
 @router.put("/{category_id}/{office_id}", dependencies=[Depends(require_operador_or_admin)])
 async def update_target(
     category_id: int, office_id: int, body: CategoryTargetUpdate,
+    company: CurrentCompany = Depends(get_current_company),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Actualiza una fila existente. Solo los campos presentes en el body se modifican.
@@ -414,6 +428,17 @@ async def update_target(
         text(f"UPDATE category_targets SET {set_clause} WHERE category_id = :c AND bsale_office_id = :o"),
         params,
     )
+    await log_event(
+        db, company_id=company.company_id, event_type="config.updated",
+        actor_user_id=user.id,
+        payload={
+            "que": "category_target_update",
+            "category_id": category_id,
+            "office_id": office_id,
+            "campos": list(fields_to_update.keys()),
+        },
+        commit=False,
+    )
     await db.commit()
 
     # Devolver fila actualizada
@@ -427,6 +452,8 @@ async def update_target(
 @router.delete("/{category_id}/{office_id}", dependencies=[Depends(require_operador_or_admin)])
 async def delete_target(
     category_id: int, office_id: int,
+    company: CurrentCompany = Depends(get_current_company),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Elimina una fila."""
@@ -434,7 +461,18 @@ async def delete_target(
         text("DELETE FROM category_targets WHERE category_id = :c AND bsale_office_id = :o"),
         {"c": category_id, "o": office_id},
     )
-    await db.commit()
     if res.rowcount == 0:
+        await db.commit()
         raise HTTPException(status_code=404, detail="Fila no encontrada.")
+    await log_event(
+        db, company_id=company.company_id, event_type="config.updated",
+        actor_user_id=user.id,
+        payload={
+            "que": "category_target_delete",
+            "category_id": category_id,
+            "office_id": office_id,
+        },
+        commit=False,
+    )
+    await db.commit()
     return {"ok": True, "category_id": category_id, "office_id": office_id}

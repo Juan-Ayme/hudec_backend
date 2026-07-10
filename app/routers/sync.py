@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, text
 from pydantic import BaseModel, Field
 
-from app.auth import CurrentCompany, CurrentUser, get_current_company, require_operador_or_admin
+from app.auth import CurrentCompany, CurrentUser, get_current_company, get_current_user, require_operador_or_admin
 from app.database import get_db
+from app.events import log_event
 from app.kawii_matrix import cache as matrix_cache
 
 
@@ -120,6 +121,7 @@ def _run_mt_sync(task_id: str, days: int,
 @router.post("/incremental")
 async def trigger_incremental(
     company: CurrentCompany = Depends(get_current_company),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
@@ -189,11 +191,32 @@ async def trigger_incremental(
     # quedó vieja. Invalidamos para que el próximo hit refleje los datos nuevos.
     matrix_cache.invalidate()
 
+    logger.info(
+        "Sync incremental disparado por user_id=%s en company=%s (ok=%s)",
+        user.id, company.company_id, report["ok"],
+    )
+    await log_event(
+        db, company_id=company.company_id, event_type="sync.triggered",
+        actor_user_id=user.id,
+        payload={
+            "mode": "incremental",
+            "ok": report["ok"],
+            "stats": report.get("stats", {}),
+            "productos_huerfanos": report.get("productos_huerfanos"),
+        },
+        commit=True,
+    )
+
     return report
 
 
 @router.post("/run")
-async def trigger_update(payload: SyncRunRequest | None = None) -> dict:
+async def trigger_update(
+    payload: SyncRunRequest | None = None,
+    company: CurrentCompany = Depends(get_current_company),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """
     Dispara mt_sync.py en background (sync multi-tenant).
 
@@ -219,6 +242,16 @@ async def trigger_update(payload: SyncRunRequest | None = None) -> dict:
         daemon=True,
     )
     thread.start()
+    logger.info(
+        "Sync full encolada task_id=%s por user_id=%s en company=%s (%d dias)",
+        task_id, user.id, company.company_id, params.days,
+    )
+    await log_event(
+        db, company_id=company.company_id, event_type="sync.triggered",
+        actor_user_id=user.id,
+        payload={"mode": "full", "task_id": task_id, **params.model_dump()},
+        commit=True,
+    )
     return {
         "ok": True,
         "message": f"Sync encolada ({params.days} dias)",

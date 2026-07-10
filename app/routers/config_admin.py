@@ -31,6 +31,7 @@ from app.auth import (
     require_operador_or_admin,
 )
 from app.database import get_db
+from app.events import log_event
 from app.config_defaults import (
     DEFAULT_THRESHOLDS,
     THRESHOLD_SECTIONS,
@@ -308,6 +309,7 @@ async def read_exclusions(
 async def write_exclusions(
     body: ExclusionsBody,
     company: CurrentCompany = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Reemplaza exclusiones y estacionales. La UI envía IDs actuales; se convierten a
@@ -337,6 +339,16 @@ async def write_exclusions(
             ),
             {"c": cid, "k": key, "v": json.dumps(names, ensure_ascii=False)},
         )
+    await log_event(
+        db, company_id=cid, event_type="config.updated", actor_user_id=user.id,
+        payload={
+            "que": "exclusions",
+            "excluded_departments": excl_dep,
+            "excluded_categories": cat_names,
+            "seasonal_departments": seasonal_dep,
+        },
+        commit=False,
+    )
     await db.commit()
     matrix_cache.invalidate(company_id=cid)
     return {
@@ -415,6 +427,7 @@ async def read_thresholds(
 async def write_thresholds(
     body: ThresholdsBody,
     company: CurrentCompany = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Persiste umbrales (merge sobre los actuales).
@@ -436,6 +449,11 @@ async def write_thresholds(
             "ON CONFLICT (company_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()"
         ),
         {"c": cid, "k": THRESHOLDS_KEY, "v": json.dumps(current)},
+    )
+    await log_event(
+        db, company_id=cid, event_type="config.updated", actor_user_id=user.id,
+        payload={"que": "thresholds", "changed": list(body.thresholds.keys())},
+        commit=False,
     )
     await db.commit()
     return {
@@ -570,6 +588,7 @@ async def read_company(
 async def write_company(
     body: CompanyBody,
     company: CurrentCompany = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Persiste la configuración de empresa (merge sobre lo actual).
@@ -618,6 +637,11 @@ async def write_company(
             "ON CONFLICT (company_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()"
         ),
         {"c": cid, "k": COMPANY_KEY, "v": json.dumps(current)},
+    )
+    await log_event(
+        db, company_id=cid, event_type="config.updated", actor_user_id=user.id,
+        payload={"que": "company", "changed": list(body.company.keys())},
+        commit=False,
     )
     await db.commit()
     return {
@@ -914,6 +938,7 @@ async def list_backups(
 async def create_manual_snapshot(
     body: ManualSnapshotBody,
     company: CurrentCompany = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Snapshot manual con etiqueta. Por defecto incluye TODAS las
@@ -931,6 +956,11 @@ async def create_manual_snapshot(
         await _snapshot_before_change(
             db, cid, k, source="manual snapshot", label=body.label.strip(), is_manual=True
         )
+    await log_event(
+        db, company_id=cid, event_type="config.updated", actor_user_id=user.id,
+        payload={"que": "backup_manual", "label": body.label.strip(), "keys": keys},
+        commit=False,
+    )
     await db.commit()
     return {
         "ok": True,
@@ -945,6 +975,7 @@ async def create_manual_snapshot(
 async def restore_backup(
     backup_id: int,
     company: CurrentCompany = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Restaura `app_config[config_key]` al valor que tenía esa fila de
@@ -993,6 +1024,11 @@ async def restore_backup(
             ),
             {"c": cid, "k": key, "v": target_value},
         )
+    await log_event(
+        db, company_id=cid, event_type="config.updated", actor_user_id=user.id,
+        payload={"que": "restore", "backup_id": backup_id, "config_key": key},
+        commit=False,
+    )
     await db.commit()
     return {
         "ok": True,
@@ -1008,6 +1044,7 @@ async def restore_backup(
 async def delete_backup(
     backup_id: int,
     company: CurrentCompany = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Borra un snapshot histórico específico de la empresa activa. Útil para
@@ -1019,6 +1056,12 @@ async def delete_backup(
     row = result.mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail=f"Backup {backup_id} no existe")
+    await log_event(
+        db, company_id=company.company_id, event_type="config.updated",
+        actor_user_id=user.id,
+        payload={"que": "delete_backup", "backup_id": row["id"]},
+        commit=False,
+    )
     await db.commit()
     return {"ok": True, "deleted_id": row["id"]}
 
@@ -1057,6 +1100,7 @@ async def export_config(
 async def import_config(
     body: ImportBody,
     company: CurrentCompany = Depends(require_admin),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Aplica un JSON exportado previamente sobre la empresa activa. Antes de
@@ -1089,6 +1133,11 @@ async def import_config(
                 {"c": cid, "k": key, "v": json.dumps(parsed, ensure_ascii=False)},
             )
         applied.append(key)
+    await log_event(
+        db, company_id=cid, event_type="config.updated", actor_user_id=user.id,
+        payload={"que": "import", "applied": applied, "ignored": ignored, "label": snapshot_label},
+        commit=False,
+    )
     await db.commit()
     return {
         "ok": True,

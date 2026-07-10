@@ -75,6 +75,11 @@ def _acquire_live_conn():
             # Conexion zombie detectada por psycopg2
             _pool.putconn(conn, close=True)
 
+    logger.error(
+        "No se pudo obtener una conexion viva del pool tras 10 intentos "
+        "(todas cerradas/zombie). Pool %s:%s/%s",
+        DB_CONFIG.get("host"), DB_CONFIG.get("port"), DB_CONFIG.get("dbname"),
+    )
     raise RuntimeError("No se pudo obtener una conexion viva del pool tras 10 intentos")
 
 
