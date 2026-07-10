@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"    # Version semantica
     DEBUG: bool = False           # True = logs mas detallados (NO usar en produccion)
 
+    # --- Logging ---
+    # Formato de salida de los logs (ver app/logging_config.py):
+    #   "text" (default): línea legible, ideal para desarrollo local.
+    #   "json": un objeto JSON por línea, para producción / Render (ingerible
+    #           por un agregador de logs). Cambiar via env LOG_FORMAT=json.
+    LOG_FORMAT: str = "text"
+
     # --- Configuracion de marca (White-label) ---
     BRAND_NAME: str = "hudec"
     CLASSIFICATION_LABEL: str = "Clasificación HUDEC"

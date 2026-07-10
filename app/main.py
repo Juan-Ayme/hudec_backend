@@ -24,6 +24,8 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.database import engine
+from app.logging_config import setup_logging
+from app.middleware.logging import RequestContextMiddleware
 from sqlalchemy import text
 from app.routers import (
     analytics,
@@ -48,11 +50,10 @@ from app.routers import (
 )
 from app.kawii_matrix.router import router as matrix_router
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Config central de logging (text en dev, json en prod via LOG_FORMAT).
+# Reemplaza el viejo logging.basicConfig — un solo punto de verdad para el
+# formato, con contexto de request (request_id/company_id/user_id) inyectado.
+setup_logging(get_settings().LOG_FORMAT)
 logger = logging.getLogger("kawii.api")
 
 
@@ -86,6 +87,12 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+# RequestContextMiddleware se agrega ANTES que CORS → en este proyecto el
+# primero agregado queda más AFUERA (ver nota de orden más abajo), así envuelve
+# todo el request: genera request_id, resuelve company_id/user_id, mide duración
+# y emite la línea de acceso con el status_code final.
+app.add_middleware(RequestContextMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
