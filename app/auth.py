@@ -285,6 +285,63 @@ require_operador_or_admin = require_role("admin", "operador")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Scope por SUCURSAL (además del scope por empresa)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def get_allowed_offices(
+    company: CurrentCompany = Depends(get_current_company),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> set[int] | None:
+    """Sucursales (bsale_office_id) a las que el usuario tiene acceso en la
+    empresa activa.
+
+    Convención (retrocompatible): si el usuario NO tiene filas en
+    `user_offices` para esta empresa, devuelve None = SIN restricción (ve
+    todas las sucursales). Con filas, devuelve ese conjunto.
+    """
+    rows = await db.execute(
+        text(
+            "SELECT bsale_office_id FROM user_offices "
+            "WHERE user_id = :u AND company_id = :c"
+        ),
+        {"u": user.id, "c": company.company_id},
+    )
+    ids = {r[0] for r in rows}
+    return ids or None
+
+
+def resolve_office_scope(
+    requested_office_id: int | None,
+    allowed: set[int] | None,
+) -> int | None:
+    """Reconcilia el `office_id` pedido por el request con las sucursales
+    permitidas. Devuelve el office_id EFECTIVO a usar (o None = todas).
+
+    - `allowed is None` (sin restricción): respeta lo pedido (incl. None=todas).
+    - restringido + no pide sucursal: si tiene UNA permitida, la usa; si tiene
+      varias, exige elegir (400) — nunca cae a "todas".
+    - restringido + pide una fuera del set: 403.
+    """
+    if allowed is None:
+        return requested_office_id
+    if requested_office_id is None:
+        if len(allowed) == 1:
+            return next(iter(allowed))
+        raise HTTPException(
+            status_code=400,
+            detail="Debés especificar una sucursal: tu acceso está restringido.",
+        )
+    if requested_office_id not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="No tenés acceso a esta sucursal.",
+        )
+    return requested_office_id
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Bootstrap: siembra un admin inicial si la tabla está vacía
 # ──────────────────────────────────────────────────────────────────────────────
 

@@ -8,6 +8,10 @@ para poder reconstruir "¿qué clasificación tenía cuando posponí?" sin
 depender de que las matrices den el mismo resultado más adelante.
 
 Tipos de decisión:
+- `solicitado`: el encargado de tienda AVISA que este SKU hay que pedirlo.
+  No decide la compra — solo la solicita. Es el único tipo que puede
+  registrar un rol `viewer`; el admin/operador lo ve en su bandeja y
+  resuelve con `ordenar`/`ignorar`. Sin cantidad obligatoria.
 - `ordenar`: comprar este SKU exacto. Persiste la cantidad acordada.
 - `comprar_similar`: comprar un producto IGUAL (mismo concepto, no
   necesariamente el SKU). Útil cuando el SKU exacto no está disponible
@@ -47,6 +51,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
+    CurrentCompany,
     CurrentUser,
     get_current_company,
     get_current_user,
@@ -65,7 +70,9 @@ router = APIRouter(
 # Modelos Pydantic (request/response)
 # ──────────────────────────────────────────────────────────────────────────────
 
-DecisionKind = Literal["ordenar", "comprar_similar", "posponer", "ignorar"]
+DecisionKind = Literal[
+    "solicitado", "ordenar", "comprar_similar", "posponer", "ignorar"
+]
 
 
 class DecisionCreate(BaseModel):
@@ -114,6 +121,14 @@ class DecisionOut(BaseModel):
     notes: str | None
     classification_snapshot: dict[str, Any] | None
     created_at: datetime
+    # Quién registró la decisión (para "Solicitado por Deisy"). `actor_user_id`
+    # puede ser NULL en filas viejas anteriores a la migración 2026-07-11.
+    actor_user_id: int | None = None
+    actor_username: str | None = None
+    # display_code del SKU (lo que el usuario ve). Presente en la lista de
+    # decisiones vigentes para cruzar con la tabla de compras sin exponer el
+    # variant_id interno. None en respuestas que no lo resuelven.
+    sku: str | None = None
 
 
 class DecisionHistory(BaseModel):
@@ -150,6 +165,9 @@ def _row_to_decision(row: dict) -> DecisionOut:
         notes=row.get("notes"),
         classification_snapshot=snapshot,
         created_at=row["created_at"],
+        actor_user_id=row.get("actor_user_id"),
+        actor_username=row.get("actor_username"),
+        sku=row.get("sku"),
     )
 
 
@@ -181,23 +199,42 @@ async def _resolve_variant_id(
 async def create_decision(
     body: DecisionCreate,
     db: AsyncSession = Depends(get_db),
-    _user: CurrentUser = Depends(require_operador_or_admin),
+    user: CurrentUser = Depends(get_current_user),
+    company: CurrentCompany = Depends(get_current_company),
 ) -> dict:
     """Registra una nueva decisión. NO actualiza filas existentes — se
     apila al historial. La 'decisión vigente' para ese (SKU, sucursal) pasa
-    a ser esta."""
+    a ser esta.
+
+    Permiso por tipo de decisión:
+      - `solicitado` (avisar que falta): cualquier miembro de la empresa,
+        incluido `viewer`. Es la acción del encargado de tienda.
+      - resto (decidir la compra): solo `operador`/`admin`.
+    """
+    if body.decision != "solicitado" and company.role not in ("operador", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Tu rol solo permite registrar decisiones de tipo 'solicitado'. "
+                "Ordenar/ignorar/posponer requieren rol operador o admin."
+            ),
+        )
+
     variant_id = await _resolve_variant_id(db, body.bsale_variant_id, body.sku)
     result = await db.execute(
         text(
             """
             INSERT INTO purchase_decisions
-                (bsale_variant_id, bsale_office_id, decision, quantity, notes,
-                 classification_snapshot)
-            VALUES (:v, :o, :d, :q, :n, CAST(:s AS jsonb))
+                (company_id, bsale_variant_id, bsale_office_id, decision,
+                 quantity, notes, classification_snapshot, actor_user_id)
+            VALUES (:c, :v, :o, :d, :q, :n, CAST(:s AS jsonb), :actor)
             RETURNING id, created_at
             """
         ),
         {
+            # company_id explícito: la columna es NOT NULL y el RLS exige
+            # company_id = current_company_id(). Antes se omitía (bug latente).
+            "c": company.company_id,
             "v": variant_id,
             "o": body.bsale_office_id,
             "d": body.decision,
@@ -206,6 +243,7 @@ async def create_decision(
             "s": json.dumps(body.classification_snapshot)
             if body.classification_snapshot is not None
             else None,
+            "actor": user.id,
         },
     )
     row = result.mappings().one()
@@ -243,19 +281,21 @@ async def read_decisions_for_sku(
     """Decisión vigente + historial completo para un SKU (opcionalmente
     filtrado por sucursal)."""
     params: dict[str, Any] = {"v": bsale_variant_id}
-    where = "bsale_variant_id = :v"
+    where = "pd.bsale_variant_id = :v"
     if office_id is not None:
-        where += " AND bsale_office_id = :o"
+        where += " AND pd.bsale_office_id = :o"
         params["o"] = office_id
     rows = (
         await db.execute(
             text(
                 f"""
-                SELECT id, bsale_variant_id, bsale_office_id, decision,
-                       quantity, notes, classification_snapshot, created_at
-                FROM purchase_decisions
+                SELECT pd.id, pd.bsale_variant_id, pd.bsale_office_id, pd.decision,
+                       pd.quantity, pd.notes, pd.classification_snapshot,
+                       pd.created_at, pd.actor_user_id, u.username AS actor_username
+                FROM purchase_decisions pd
+                LEFT JOIN app_users u ON u.id = pd.actor_user_id
                 WHERE {where}
-                ORDER BY created_at DESC
+                ORDER BY pd.created_at DESC
                 """
             ),
             params,
@@ -281,10 +321,10 @@ async def list_active_decisions(
     params: dict[str, Any] = {}
     filters = []
     if office_id is not None:
-        filters.append("bsale_office_id = :o")
+        filters.append("pd.bsale_office_id = :o")
         params["o"] = office_id
     if decision is not None:
-        filters.append("decision = :d")
+        filters.append("pd.decision = :d")
         params["d"] = decision
     where = ("WHERE " + " AND ".join(filters)) if filters else ""
 
@@ -293,12 +333,18 @@ async def list_active_decisions(
         await db.execute(
             text(
                 f"""
-                SELECT DISTINCT ON (bsale_variant_id, bsale_office_id)
-                       id, bsale_variant_id, bsale_office_id, decision,
-                       quantity, notes, classification_snapshot, created_at
-                FROM purchase_decisions
+                SELECT DISTINCT ON (pd.bsale_variant_id, pd.bsale_office_id)
+                       pd.id, pd.bsale_variant_id, pd.bsale_office_id, pd.decision,
+                       pd.quantity, pd.notes, pd.classification_snapshot,
+                       pd.created_at, pd.actor_user_id, u.username AS actor_username,
+                       v.display_code AS sku
+                FROM purchase_decisions pd
+                LEFT JOIN app_users u ON u.id = pd.actor_user_id
+                LEFT JOIN variants v
+                       ON v.company_id = pd.company_id
+                      AND v.bsale_variant_id = pd.bsale_variant_id
                 {where}
-                ORDER BY bsale_variant_id, bsale_office_id, created_at DESC
+                ORDER BY pd.bsale_variant_id, pd.bsale_office_id, pd.created_at DESC
                 """
             ),
             params,

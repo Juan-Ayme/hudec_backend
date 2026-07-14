@@ -274,7 +274,11 @@ async def list_tasks() -> list[dict]:
 @router.post("/{task_id}/stop", response_model=StopTaskResult)
 async def stop_task(
     task_id: str,
-    user: CurrentUser = Depends(require_operador_or_admin),
+    # La guardia de rol (operador/admin) ya la aplica el router vía
+    # `dependencies=[Depends(require_operador_or_admin), ...]`. Acá inyectamos
+    # get_current_user solo para obtener el username real: require_operador_or_admin
+    # devuelve un CurrentCompany (sin .username), no un CurrentUser.
+    user: CurrentUser = Depends(get_current_user),
 ) -> StopTaskResult:
     """Cancela una sync en curso enviando terminate() al subproceso.
 

@@ -63,6 +63,10 @@ class CompanyMembership(BaseModel):
     name: str
     slug: str
     role: UserRole
+    # Sucursales a las que el user está limitado en esta empresa.
+    # [] = sin restricción (ve todas). El frontend usa esto para acotar el
+    # selector de sucursal.
+    allowed_office_ids: list[int] = []
 
 
 class UserOut(BaseModel):
@@ -74,18 +78,25 @@ class UserOut(BaseModel):
     is_active: bool
     created_at: datetime
     last_login_at: datetime | None
+    # Sucursales asignadas en esta empresa ([] = todas).
+    office_ids: list[int] = []
 
 
 class CreateUserBody(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=6)
     role: UserRole  # rol en la empresa activa
+    # Sucursales permitidas en la empresa activa. None/[] = acceso a todas.
+    office_ids: list[int] | None = None
 
 
 class UpdateUserBody(BaseModel):
     role: UserRole | None = None  # cambia el rol en la empresa activa
     is_active: bool | None = None  # bandera GLOBAL del usuario
     password: str | None = Field(default=None, min_length=6)
+    # None = no tocar las sucursales; [] = limpiar (pasa a ver todas);
+    # [ids…] = restringir a ese conjunto.
+    office_ids: list[int] | None = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -101,7 +112,12 @@ async def _list_user_companies(
         await db.execute(
             text(
                 """
-                SELECT c.id, c.name, c.slug, uc.role
+                SELECT c.id, c.name, c.slug, uc.role,
+                       COALESCE(ARRAY(
+                           SELECT uo.bsale_office_id FROM user_offices uo
+                           WHERE uo.user_id = uc.user_id AND uo.company_id = c.id
+                           ORDER BY uo.bsale_office_id
+                       ), '{}') AS allowed_office_ids
                 FROM user_companies uc
                 JOIN companies c ON c.id = uc.company_id
                 WHERE uc.user_id = :uid AND c.is_active
@@ -113,7 +129,8 @@ async def _list_user_companies(
     ).mappings().all()
     return [
         CompanyMembership(
-            id=r["id"], name=r["name"], slug=r["slug"], role=r["role"]
+            id=r["id"], name=r["name"], slug=r["slug"], role=r["role"],
+            allowed_office_ids=list(r["allowed_office_ids"] or []),
         )
         for r in rows
     ]
@@ -266,7 +283,12 @@ async def list_users(
             text(
                 """
                 SELECT u.id, u.username, uc.role, u.is_active,
-                       u.created_at, u.last_login_at
+                       u.created_at, u.last_login_at,
+                       COALESCE(ARRAY(
+                           SELECT uo.bsale_office_id FROM user_offices uo
+                           WHERE uo.user_id = u.id AND uo.company_id = uc.company_id
+                           ORDER BY uo.bsale_office_id
+                       ), '{}') AS office_ids
                 FROM user_companies uc
                 JOIN app_users u ON u.id = uc.user_id
                 WHERE uc.company_id = :cid
@@ -286,10 +308,30 @@ async def list_users(
                 is_active=r["is_active"],
                 created_at=r["created_at"],
                 last_login_at=r["last_login_at"],
+                office_ids=list(r["office_ids"] or []),
             ).model_dump(mode="json")
             for r in rows
         ],
     }
+
+
+@router.get("/offices")
+async def list_company_offices(
+    company: CurrentCompany = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Sucursales de la empresa activa, para poblar el selector al crear/editar
+    usuarios (asignar acceso por sucursal). Solo admin."""
+    rows = (
+        await db.execute(
+            text(
+                "SELECT bsale_office_id AS id, name, is_active "
+                "FROM offices WHERE company_id = :c ORDER BY name"
+            ),
+            {"c": company.company_id},
+        )
+    ).mappings().all()
+    return {"total": len(rows), "offices": [dict(r) for r in rows]}
 
 
 @router.post("/users", status_code=201)
@@ -323,6 +365,15 @@ async def create_user(
             ),
             {"uid": user_row["id"], "cid": company.company_id, "r": body.role},
         )
+        # Sucursales permitidas (si se especificaron). Sin filas = ve todas.
+        for oid in body.office_ids or []:
+            await db.execute(
+                text(
+                    "INSERT INTO user_offices (user_id, company_id, bsale_office_id) "
+                    "VALUES (:uid, :cid, :oid)"
+                ),
+                {"uid": user_row["id"], "cid": company.company_id, "oid": oid},
+            )
         # Auditoría en la MISMA transacción (commit=False): la persiste el commit
         # de abajo. Sin secretos: solo actor, target y rol.
         await log_event(
@@ -366,7 +417,12 @@ async def update_user(
 ) -> dict:
     """Actualiza el rol del usuario EN LA EMPRESA ACTIVA, su estado activo
     GLOBAL o su password GLOBAL. Solo los campos pasados se cambian."""
-    if not (body.role or body.is_active is not None or body.password):
+    if not (
+        body.role
+        or body.is_active is not None
+        or body.password
+        or body.office_ids is not None
+    ):
         raise HTTPException(status_code=400, detail="Nada para actualizar")
 
     # Prevenir auto-degradación / auto-desactivación.
@@ -417,6 +473,25 @@ async def update_user(
                 status_code=404, detail=f"Usuario {user_id} no existe"
             )
 
+    # Sucursales permitidas: None = no tocar; [] o [ids] = reemplazar el set.
+    # Se valida contra la empresa activa (FK compuesta a offices).
+    if body.office_ids is not None:
+        await db.execute(
+            text(
+                "DELETE FROM user_offices "
+                "WHERE user_id = :uid AND company_id = :cid"
+            ),
+            {"uid": user_id, "cid": company.company_id},
+        )
+        for oid in body.office_ids:
+            await db.execute(
+                text(
+                    "INSERT INTO user_offices (user_id, company_id, bsale_office_id) "
+                    "VALUES (:uid, :cid, :oid)"
+                ),
+                {"uid": user_id, "cid": company.company_id, "oid": oid},
+            )
+
     # Auditoría: qué campos cambiaron (NUNCA el password, solo la bandera de que
     # se cambió). Se persiste con el commit de abajo (commit=False).
     changed = []
@@ -426,6 +501,8 @@ async def update_user(
         changed.append("is_active")
     if body.password is not None:
         changed.append("password")
+    if body.office_ids is not None:
+        changed.append("office_ids")
     await log_event(
         db, company_id=company.company_id, event_type="auth.user.updated",
         actor_user_id=user.id,
