@@ -205,21 +205,21 @@ async def _period_kpis(
           -- TOTALES
           COALESCE(SUM(dd.total_amount) FILTER (WHERE NOT dd.is_gratuity), 0)                   AS ventas_total,
           COALESCE(SUM(dd.total_amount)
-                   FILTER (WHERE NOT dd.is_gratuity AND vc.effective_cost > 0), 0)              AS ventas_con_costo_total,
+                   FILTER (WHERE NOT dd.is_gratuity AND COALESCE(vco.effective_cost, vc.effective_cost) > 0), 0)              AS ventas_con_costo_total,
           COALESCE(SUM(dd.quantity)     FILTER (WHERE NOT dd.is_gratuity), 0)                   AS unds_total,
           COALESCE(COUNT(DISTINCT doc.bsale_document_id) FILTER (WHERE NOT dd.is_gratuity), 0)  AS tickets_total,
-          COALESCE(SUM(dd.quantity * vc.effective_cost)
-                   FILTER (WHERE NOT dd.is_gratuity AND vc.effective_cost > 0), 0)              AS costo_total,
+          COALESCE(SUM(dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost))
+                   FILTER (WHERE NOT dd.is_gratuity AND COALESCE(vco.effective_cost, vc.effective_cost) > 0), 0)              AS costo_total,
           COALESCE(SUM(dd.net_discount) FILTER (WHERE NOT dd.is_gratuity), 0)                   AS descuento_total,
           COALESCE(SUM(dd.net_amount + dd.net_discount) FILTER (WHERE NOT dd.is_gratuity), 0)   AS bruto_total,
           -- RECURRENTES (excluye estacionales/categorías marcadas)
           COALESCE(SUM(dd.total_amount) FILTER (WHERE NOT dd.is_gratuity {recurrent_filter_inline}), 0)  AS ventas_rec,
           COALESCE(SUM(dd.total_amount)
-                   FILTER (WHERE NOT dd.is_gratuity AND vc.effective_cost > 0 {recurrent_filter_inline}), 0) AS ventas_con_costo_rec,
+                   FILTER (WHERE NOT dd.is_gratuity AND COALESCE(vco.effective_cost, vc.effective_cost) > 0 {recurrent_filter_inline}), 0) AS ventas_con_costo_rec,
           COALESCE(SUM(dd.quantity)     FILTER (WHERE NOT dd.is_gratuity {recurrent_filter_inline}), 0)  AS unds_rec,
           COALESCE(COUNT(DISTINCT doc.bsale_document_id) FILTER (WHERE NOT dd.is_gratuity {recurrent_filter_inline}), 0) AS tickets_rec,
-          COALESCE(SUM(dd.quantity * vc.effective_cost)
-                   FILTER (WHERE NOT dd.is_gratuity AND vc.effective_cost > 0 {recurrent_filter_inline}), 0) AS costo_rec,
+          COALESCE(SUM(dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost))
+                   FILTER (WHERE NOT dd.is_gratuity AND COALESCE(vco.effective_cost, vc.effective_cost) > 0 {recurrent_filter_inline}), 0) AS costo_rec,
           COALESCE(SUM(dd.net_discount) FILTER (WHERE NOT dd.is_gratuity {recurrent_filter_inline}), 0)  AS descuento_rec,
           COALESCE(SUM(dd.net_amount + dd.net_discount) FILTER (WHERE NOT dd.is_gratuity {recurrent_filter_inline}), 0) AS bruto_rec,
           -- Regalos/gratuidades (no se separan total/recurrente — son globales)
@@ -231,6 +231,7 @@ async def _period_kpis(
         JOIN variants v          ON v.bsale_variant_id    = dd.bsale_variant_id  AND v.company_id   = dd.company_id
         LEFT JOIN v_products_full vpf ON vpf.bsale_product_id  = v.bsale_product_id AND vpf.company_id = v.company_id
         LEFT JOIN variant_costs vc   ON vc.bsale_variant_id = dd.bsale_variant_id  AND vc.company_id  = dd.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = dd.bsale_variant_id AND vco.company_id = dd.company_id AND vco.bsale_office_id = doc.bsale_office_id
         WHERE dd.company_id = :cid
           AND (doc.emission_date AT TIME ZONE '{_TZ_DATE}')::DATE >= :dfrom
           AND (doc.emission_date AT TIME ZONE '{_TZ_DATE}')::DATE <  :dto

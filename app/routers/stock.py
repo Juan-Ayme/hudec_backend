@@ -71,11 +71,12 @@ async def stock_valuation(
     """
     res = await db.execute(text("""
         SELECT o.bsale_office_id, o.name AS sucursal,
-               ROUND(SUM(sl.quantity_available * COALESCE(vc.effective_cost, 0))::numeric, 2) AS valor_soles,
+               ROUND(SUM(sl.quantity_available * COALESCE(vco.effective_cost, vc.effective_cost, 0))::numeric, 2) AS valor_soles,
                SUM(sl.quantity_available) AS unidades
         FROM stock_levels sl
         JOIN offices o              ON o.bsale_office_id  = sl.bsale_office_id  AND o.company_id  = sl.company_id
         LEFT JOIN variant_costs vc  ON vc.bsale_variant_id = sl.bsale_variant_id AND vc.company_id = sl.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = sl.bsale_variant_id AND vco.company_id = sl.company_id AND vco.bsale_office_id = sl.bsale_office_id
         WHERE sl.company_id = :cid
           AND sl.quantity_available > 0
         GROUP BY o.bsale_office_id, o.name

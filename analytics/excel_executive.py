@@ -362,8 +362,14 @@ def _safe_date(v: Any):
 # elige la clasificación de la fila con más ventas.
 # ──────────────────────────────────────────────────────────────────────────
 
-def _aggregate_rows(rows_dict: list[dict[str, Any]], classification_col: str = "Clasificación") -> dict:
-    """Devuelve {dept: {cat: {subcat: {sku: {**fields}}}}}."""
+def _aggregate_rows(rows_dict: list[dict[str, Any]], classification_col: str = "Clasificación",
+                    extra_cols: list[str] | None = None) -> dict:
+    """Devuelve {dept: {cat: {subcat: {sku: {**fields}}}}}.
+
+    `extra_cols` = columnas opcionales ya calculadas POR SKU aguas arriba
+    (ej. "Utilidad (S/)", "Margen %", "Stock KAWII ASAMBLEA"). Son constantes para
+    el SKU (no dependen de la fila/sucursal), así que se copian tal cual.
+    """
     tree: dict[str, dict[str, dict[str, dict[str, dict[str, Any]]]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(dict))
     )
@@ -434,8 +440,15 @@ def _aggregate_rows(rows_dict: list[dict[str, Any]], classification_col: str = "
                 "_dominant_ventas": ventas,  # para elegir clasif dominante
                 "_n_filas": 1,               # cuántas sucursales se consolidaron
             }
+            # Columnas extra (ya calculadas POR SKU): se copian tal cual.
+            for _c in (extra_cols or []):
+                agg[_c] = r.get(_c)
             tree[dept][cat][subcat][sku] = agg
         else:
+            # Extra cols: conservar el primer valor no nulo (constantes por SKU).
+            for _c in (extra_cols or []):
+                if agg.get(_c) is None:
+                    agg[_c] = r.get(_c)
             agg["ventas_s"] += ventas
             agg["unds"] += unds
             agg["stock"] += stock
@@ -674,19 +687,36 @@ DEPT_COL_WIDTHS = [_WIDTH_BY_HEADER[h] for h in DEPT_HEADERS]
 def _build_dept_sheet(wb: Workbook, dept_name: str, dept_data: dict,
                       rank: int, total_dept: float, total_general: float,
                       meta_line: str, used_names: set[str], tab_color: str,
-                      similares_map: dict[str, dict] | None = None) -> None:
+                      similares_map: dict[str, dict] | None = None,
+                      show_margin: bool = False,
+                      extra_stock_cols: list[str] | None = None) -> None:
     sheet_name = _safe_sheet_name(f"{rank}. {dept_name}", used_names)
     ws = wb.create_sheet(title=sheet_name)
     ws.sheet_properties.tabColor = tab_color
 
-    # Columna opt-in "⚠ Similar en tienda" (solo cuando el caller pasa el
-    # mapa, ej. Excel de compras). Va al FINAL para no mover los COL_*.
-    headers = DEPT_HEADERS + (["⚠ Similar en tienda"] if similares_map is not None else [])
-    col_similar = len(DEPT_HEADERS) + 1 if similares_map is not None else None
+    # Columnas OPT-IN. TODAS van al FINAL para no mover los COL_*: las filas de
+    # subtotal (Cat/SubCat) escriben por constante, así que insertar columnas en
+    # el medio las dejaría desalineadas.
+    extra: list[str] = []
+    extra_widths: list[int] = []
+    if show_margin:
+        extra += ["Utilidad (S/)", "Margen %"]
+        extra_widths += [14, 10]
+    for _sc in (extra_stock_cols or []):
+        extra.append(_sc)
+        extra_widths.append(18)
+    if similares_map is not None:
+        extra.append("⚠ Similar en tienda")
+        extra_widths.append(46)
+
+    headers = DEPT_HEADERS + extra
+    _base = len(DEPT_HEADERS)
+    extra_idx = {name: _base + i + 1 for i, name in enumerate(extra)}  # 1-based
+    col_similar = extra_idx.get("⚠ Similar en tienda")
     NCOLS = len(headers)
 
     # Anchos
-    col_widths = DEPT_COL_WIDTHS + ([46] if similares_map is not None else [])
+    col_widths = DEPT_COL_WIDTHS + extra_widths
     for i, w in enumerate(col_widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -967,6 +997,30 @@ def _build_dept_sheet(wb: Workbook, dept_name: str, dept_data: dict,
                 c = ws.cell(row=row, column=COL_CLASIF, value=info["clasif"] or "—")
                 _apply(c, font=_font(tone[0], size=10, bold=True),
                        fill=_fill(tone[1]), align=_align("left", "center", wrap=True))
+                # ── Columnas opt-in (al final) ──────────────────────────────
+                if show_margin:
+                    u = info.get("Utilidad (S/)")
+                    c = ws.cell(row=row, column=extra_idx["Utilidad (S/)"],
+                                value=float(u) if u is not None else None)
+                    _apply(c, font=_font(fg, size=10, bold=bold), fill=bg,
+                           align=_align("right"), num_format=NF_MONEY)
+                    mp = info.get("Margen %")
+                    c = ws.cell(row=row, column=extra_idx["Margen %"],
+                                value=(float(mp) / 100.0) if mp is not None else None)
+                    _apply(c, font=_font(fg, size=10, bold=bold), fill=bg,
+                           align=_align("right"), num_format="0.0%")
+                # Stock en OTRAS sucursales: si hay, la acción es TRASLADAR (azul),
+                # no comprar al proveedor.
+                for _sc in (extra_stock_cols or []):
+                    sv = info.get(_sc)
+                    sv = int(sv) if sv else None
+                    c = ws.cell(row=row, column=extra_idx[_sc], value=sv)
+                    if sv:
+                        _apply(c, font=_font("1F4E79", size=10, bold=True),
+                               fill=_fill("DDEBF7"), align=_align("right"), num_format=NF_INT)
+                    else:
+                        _apply(c, font=_font(fg, size=10), fill=bg,
+                               align=_align("right"), num_format=NF_INT)
                 # ⚠ Similar en tienda: ya existe un producto parecido con
                 # stock — revisar antes de comprar (advertencia, no excluye).
                 if col_similar is not None:
@@ -1007,6 +1061,11 @@ def build_executive_workbook(
     # SKU → info de similares (analytics.similares). None (default) = sin la
     # columna "⚠ Similar en tienda" → salida idéntica a la previa.
     similares_map: dict[str, dict] | None = None,
+    # Columnas OPCIONALES. Igual que "⚠ Similar en tienda", van al FINAL de la
+    # tabla para NO desplazar las constantes COL_* (si se insertaran en el medio,
+    # las filas de subtotal —que escriben por COL_*— quedarían desalineadas).
+    show_margin: bool = False,                    # → "Utilidad (S/)" + "Margen %"
+    extra_stock_cols: list[str] | None = None,    # → stock de OTRAS sucursales
 ) -> Workbook:
     """Construye el workbook ejecutivo (formato COYA-naranja).
 
@@ -1019,7 +1078,11 @@ def build_executive_workbook(
     for r in rows:
         rows_dict.append({c: r[i] for i, c in enumerate(cols) if i < len(r)})
 
-    tree = _aggregate_rows(rows_dict, classification_col=classification_col)
+    # Columnas extra que hay que arrastrar hasta la fila del SKU.
+    _extra_cols: list[str] = (["Utilidad (S/)", "Margen %"] if show_margin else []) \
+                            + list(extra_stock_cols or [])
+    tree = _aggregate_rows(rows_dict, classification_col=classification_col,
+                           extra_cols=_extra_cols)
 
     # Total general
     total_general = sum(
@@ -1056,6 +1119,8 @@ def build_executive_workbook(
             wb, dept_name, tree[dept_name], rank, total_dept,
             total_general, meta_line, used_names, tab_color,
             similares_map=similares_map,
+            show_margin=show_margin,
+            extra_stock_cols=extra_stock_cols,
         )
 
     return wb

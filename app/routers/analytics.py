@@ -119,11 +119,15 @@ async def kpis(
     variantes = await db.scalar(text("SELECT COUNT(*) FROM variants WHERE company_id = :cid"), {"cid": cid}) or 0
 
     stock_valor_q = """
-        SELECT COALESCE(SUM(sl.quantity_available * COALESCE(vc.effective_cost, 0)), 0)
+        SELECT COALESCE(SUM(sl.quantity_available * COALESCE(vco.effective_cost, vc.effective_cost, 0)), 0)
         FROM stock_levels sl
         LEFT JOIN variant_costs vc
                ON vc.company_id = sl.company_id
               AND vc.bsale_variant_id = sl.bsale_variant_id
+        LEFT JOIN variant_costs_by_office vco
+               ON vco.company_id = sl.company_id
+              AND vco.bsale_variant_id = sl.bsale_variant_id
+              AND vco.bsale_office_id = sl.bsale_office_id
         WHERE sl.company_id = :cid
           AND sl.quantity_available > 0
     """
@@ -289,11 +293,19 @@ async def sales_by_category(
     query = f"""
         SELECT vpf.department AS departamento, vpf.category AS categoria,
                ROUND(SUM(dd.total_amount)::numeric, 2) AS ventas,
-               COUNT(DISTINCT doc.bsale_document_id)   AS tickets
+               COUNT(DISTINCT doc.bsale_document_id)   AS tickets,
+               ROUND(SUM(dd.total_amount - (dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost)))
+                     FILTER (WHERE COALESCE(vco.effective_cost, vc.effective_cost) IS NOT NULL
+                                   AND NOT COALESCE(dd.is_gratuity, FALSE))::numeric, 2) AS utilidad_s,
+               ROUND(SUM(dd.total_amount)
+                     FILTER (WHERE COALESCE(vco.effective_cost, vc.effective_cost) IS NOT NULL
+                                   AND NOT COALESCE(dd.is_gratuity, FALSE))::numeric, 2) AS venta_con_costo
         FROM document_details dd
         JOIN documents doc       ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
         JOIN variants v          ON v.bsale_variant_id    = dd.bsale_variant_id  AND v.company_id   = dd.company_id
         JOIN v_products_full vpf ON vpf.bsale_product_id  = v.bsale_product_id   AND vpf.company_id = v.company_id
+        LEFT JOIN variant_costs vc ON vc.bsale_variant_id = dd.bsale_variant_id  AND vc.company_id  = dd.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = dd.bsale_variant_id AND vco.company_id = dd.company_id AND vco.bsale_office_id = doc.bsale_office_id
         WHERE dd.company_id = :cid
           AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE >= :dfrom
           AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE < :dto
@@ -305,7 +317,14 @@ async def sales_by_category(
         ORDER BY ventas DESC
     """
     res = await db.execute(text(query), params)
-    return [dict(r) for r in res.mappings().all()]
+    cats: list[dict] = []
+    for r in res.mappings().all():
+        d = dict(r)
+        u = float(d.get("utilidad_s") or 0)
+        vcc = float(d.get("venta_con_costo") or 0)
+        d["margen_pct"] = (u / vcc * 100) if vcc > 0 else None
+        cats.append(d)
+    return cats
 
 
 # ENDPOINT COMENTADO (2026-06-20) — getSalesBySubcategory definido en api.ts
@@ -442,14 +461,15 @@ async def _evolucion_serie(
                    SUM(dd.total_amount)                                        AS ventas,
                    SUM(dd.quantity)                                           AS unidades,
                    COUNT(DISTINCT doc.bsale_document_id)                      AS tickets,
-                   SUM(dd.net_amount - dd.quantity * COALESCE(vc.effective_cost, 0)) AS margen_soles,
+                   SUM(dd.net_amount - dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost, 0)) AS margen_soles,
                    SUM(dd.net_amount)                                         AS neto,
                    COUNT(DISTINCT dd.bsale_variant_id)                        AS skus_activos,
-                   SUM(CASE WHEN vc.effective_cost IS NOT NULL THEN dd.quantity ELSE 0 END) AS unds_con_costo
+                   SUM(CASE WHEN COALESCE(vco.effective_cost, vc.effective_cost) IS NOT NULL THEN dd.quantity ELSE 0 END) AS unds_con_costo
             FROM document_details dd
             JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
             {dim_join}
             LEFT JOIN variant_costs vc ON vc.company_id = dd.company_id AND vc.bsale_variant_id = dd.bsale_variant_id
+            LEFT JOIN variant_costs_by_office vco ON vco.company_id = dd.company_id AND vco.bsale_variant_id = dd.bsale_variant_id AND vco.bsale_office_id = doc.bsale_office_id
             WHERE dd.company_id = :cid
               AND doc.emission_date >= :dfrom_ext_ts
               AND doc.emission_date <  :dto_ts
@@ -720,8 +740,8 @@ async def _period_metrics(
     q2 = f"""
         SELECT
           COALESCE(SUM(dd.quantity) FILTER (WHERE NOT dd.is_gratuity), 0)             AS unds,
-          COALESCE(SUM(dd.quantity * vc.effective_cost)
-                   FILTER (WHERE NOT dd.is_gratuity AND vc.effective_cost IS NOT NULL), 0) AS costo,
+          COALESCE(SUM(dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost))
+                   FILTER (WHERE NOT dd.is_gratuity AND COALESCE(vco.effective_cost, vc.effective_cost) IS NOT NULL), 0) AS costo,
           COALESCE(SUM(dd.net_discount) FILTER (WHERE NOT dd.is_gratuity), 0)         AS descuento,
           COALESCE(COUNT(*) FILTER (WHERE dd.is_gratuity), 0)                         AS lineas_regalo,
           COALESCE(SUM(dd.total_amount) FILTER (WHERE dd.is_gratuity), 0)             AS monto_regalo,
@@ -729,6 +749,7 @@ async def _period_metrics(
         FROM document_details dd
         JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
         LEFT JOIN variant_costs vc ON vc.bsale_variant_id = dd.bsale_variant_id AND vc.company_id = dd.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = dd.bsale_variant_id AND vco.company_id = dd.company_id AND vco.bsale_office_id = doc.bsale_office_id
         WHERE dd.company_id = :cid
           AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE >= :dfrom
           AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE <  :dto
@@ -1382,17 +1403,18 @@ async def _margen_por_sku(
     query = f"""
         SELECT v.display_code AS sku,
                SUM(dd.total_amount) FILTER (WHERE NOT dd.is_gratuity) AS venta_soles,
-               SUM(dd.quantity * vc.effective_cost) FILTER (
-                   WHERE NOT dd.is_gratuity AND vc.effective_cost IS NOT NULL
+               SUM(dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost)) FILTER (
+                   WHERE NOT dd.is_gratuity AND COALESCE(vco.effective_cost, vc.effective_cost) IS NOT NULL
                ) AS costo_soles,
                SUM(dd.quantity) FILTER (WHERE NOT dd.is_gratuity) AS unds_total,
                SUM(dd.quantity) FILTER (
-                   WHERE NOT dd.is_gratuity AND vc.effective_cost IS NOT NULL
+                   WHERE NOT dd.is_gratuity AND COALESCE(vco.effective_cost, vc.effective_cost) IS NOT NULL
                ) AS unds_con_costo
         FROM document_details dd
         JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
         JOIN variants v ON v.bsale_variant_id = dd.bsale_variant_id AND v.company_id = dd.company_id
         LEFT JOIN variant_costs vc ON vc.bsale_variant_id = dd.bsale_variant_id AND vc.company_id = dd.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = dd.bsale_variant_id AND vco.company_id = dd.company_id AND vco.bsale_office_id = doc.bsale_office_id
         WHERE dd.company_id = :cid
           AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE >= (CURRENT_DATE - :days * INTERVAL '1 day')
           AND COALESCE(doc.is_credit_note, FALSE) = FALSE
@@ -1420,6 +1442,104 @@ async def _margen_por_sku(
             "cobertura_costo_pct": round(cobertura_pct, 1),
         }
     return out
+
+
+async def _margen_catalogo_por_sku(
+    db: AsyncSession,
+    company_id: int,
+    skus: list[str],
+    office_id: int | None,
+) -> dict[str, dict]:
+    """Margen de CATÁLOGO por SKU: (precio de lista − costo) / precio.
+
+    Fallback para cuando no hay ventas en 90d y por eso no se puede calcular el
+    margen realizado. Lee v_variant_price_cost (precio de lista BSale + costo por
+    sucursal). Usa precio_con_impuestos para ser consistente con el margen
+    realizado (que se calcula sobre total_amount, con impuestos). Con office_id →
+    esa sucursal; sin él → promedio entre sucursales.
+
+    Returns: {sku: {"margen_pct", "utilidad_unit"}}
+             utilidad_unit = precio_con_impuestos − costo (utilidad por unidad).
+    """
+    if not skus:
+        return {}
+    if office_id is not None:
+        office_clause = "AND vpc.bsale_office_id = :office_id"
+        params: dict[str, Any] = {"skus": skus, "cid": company_id, "office_id": office_id}
+    else:
+        office_clause = ""
+        params = {"skus": skus, "cid": company_id}
+
+    query = f"""
+        SELECT v.display_code AS sku,
+               AVG((vpc.precio_con_impuestos - vpc.costo)
+                   / NULLIF(vpc.precio_con_impuestos, 0) * 100) AS margen_pct,
+               AVG(vpc.precio_con_impuestos - vpc.costo)         AS utilidad_unit
+        FROM v_variant_price_cost vpc
+        JOIN variants v ON v.company_id = vpc.company_id AND v.bsale_variant_id = vpc.bsale_variant_id
+        WHERE vpc.company_id = :cid
+          AND v.display_code = ANY(:skus)
+          AND vpc.precio_con_impuestos > 0
+          AND vpc.costo IS NOT NULL
+          {office_clause}
+        GROUP BY v.display_code
+    """
+    res = await db.execute(text(query), params)
+    out: dict[str, dict] = {}
+    for r in res.mappings().all():
+        if r["margen_pct"] is None:
+            continue
+        out[str(r["sku"])] = {
+            "margen_pct": round(float(r["margen_pct"]), 1),
+            "utilidad_unit": round(float(r["utilidad_unit"]), 2) if r["utilidad_unit"] is not None else None,
+        }
+    return out
+
+
+@router.get("/precio-costo/{sku}")
+async def precio_costo_por_sucursal(
+    sku: str,
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """Precio de venta (lista de precios BSale) + costo por sucursal + margen.
+
+    Lee la vista v_variant_price_cost: una fila por sucursal con el precio de
+    la lista por defecto de esa sucursal y el costo (por oficina, con fallback
+    al global). Expone el PVP real que antes no se descargaba de BSale.
+    """
+    rows = (await db.execute(text("""
+        SELECT o.name              AS sucursal,
+               vpc.bsale_office_id AS office_id,
+               vpc.precio_venta,
+               vpc.precio_con_impuestos,
+               vpc.costo,
+               vpc.costo_origen,
+               vpc.margen,
+               vpc.margen_pct
+        FROM v_variant_price_cost vpc
+        JOIN variants v ON v.company_id = vpc.company_id AND v.bsale_variant_id = vpc.bsale_variant_id
+        JOIN offices  o ON o.company_id = vpc.company_id AND o.bsale_office_id  = vpc.bsale_office_id
+        WHERE vpc.company_id = :cid AND v.display_code = :sku
+        ORDER BY o.name
+    """), {"cid": company.company_id, "sku": sku})).mappings().all()
+
+    def _f(x: Any) -> float | None:
+        return float(x) if x is not None else None
+
+    return [
+        {
+            "sucursal": r["sucursal"],
+            "office_id": r["office_id"],
+            "precio_venta": _f(r["precio_venta"]),
+            "precio_con_impuestos": _f(r["precio_con_impuestos"]),
+            "costo": _f(r["costo"]),
+            "costo_origen": r["costo_origen"],
+            "margen": _f(r["margen"]),
+            "margen_pct": _f(r["margen_pct"]),
+        }
+        for r in rows
+    ]
 
 
 def _to_float(v: Any) -> float:
@@ -1518,16 +1638,26 @@ async def compras_catalogo_json(
             "margen_pct": None,
             "margen_soles": None,
             "costo_soles": None,
+            "margen_origen": None,  # "venta" | "catalogo" | None
         })
 
     # 2) Enriquecer con margen (query separada para evitar JOIN pesado en la matriz).
     sku_codes = [s["sku"] for s in skus if s["sku"]]
     margen_map = await _margen_por_sku(db, cid, sku_codes, office_id, days=90)
+    # Fallback de catálogo (precio de lista − costo) para SKUs sin ventas 90d.
+    catalogo_map = await _margen_catalogo_por_sku(db, cid, sku_codes, office_id)
     for s in skus:
         m = margen_map.get(s["sku"], {})
         s["margen_pct"] = m.get("margen_pct")
         s["margen_soles"] = m.get("margen_soles")
         s["costo_soles"] = m.get("costo_soles")
+        if s["margen_pct"] is not None:
+            s["margen_origen"] = "venta"
+        else:
+            cat = catalogo_map.get(s["sku"])
+            if cat is not None:
+                s["margen_pct"] = cat["margen_pct"]
+                s["margen_origen"] = "catalogo"
 
     # 3) KPIs globales (todo el universo filtrado).
     total_critico = sum(1 for s in skus if s["severidad"] == "🔴 Crítico")
@@ -1642,6 +1772,60 @@ async def compras_catalogo_excel(
     # El Excel consolida filas por SKU (une sucursales) → índice por SKU.
     similares_map = merge_similars_by_sku(similares_index)
 
+    # 1b) Utilidad / Margen por SKU.
+    #     Utilidad realizada (90d) = venta − costo. Si el SKU NO vendió queda vacía,
+    #     así que caemos al catálogo: margen % y utilidad POR UNIDAD (precio de
+    #     lista − costo). Así deja de salir 0 cuando sí hay margen.
+    sku_codes = [str(r.get("Código SKU") or "") for r in filtered_rows if r.get("Código SKU")]
+    margen_map_90 = await _margen_por_sku(db, cid, sku_codes, office_id, days=90)
+    margen_map_365 = await _margen_por_sku(db, cid, sku_codes, office_id, days=365)
+    catalogo_map = await _margen_catalogo_por_sku(db, cid, sku_codes, office_id)
+
+    cols.extend(["Utilidad (S/)", "Margen %"])
+    for r in filtered_rows:
+        sku = str(r.get("Código SKU") or "")
+        m90 = margen_map_90.get(sku, {})
+        m365 = margen_map_365.get(sku, {})
+        cat = catalogo_map.get(sku) or {}
+        util_real = m90.get("margen_soles")
+        r["Utilidad (S/)"] = util_real if util_real is not None else cat.get("utilidad_unit")
+        r["Margen %"] = m365.get("margen_pct") or m90.get("margen_pct") or cat.get("margen_pct")
+
+    # 1c) Stock en las OTRAS sucursales → permite decidir TRASLADAR en vez de comprar.
+    #     Una columna por cada tienda distinta a la filtrada. Es genérico: si mañana
+    #     hay más sucursales, aparecen solas (salen de OFFICE_IDS + tabla offices).
+    otras_ids = [o for o in OFFICE_IDS if o != office_id]
+    stock_cols: list[str] = []
+    if otras_ids and sku_codes:
+        onames = {
+            int(r["bsale_office_id"]): str(r["name"])
+            for r in (await db.execute(text(
+                "SELECT bsale_office_id, name FROM offices "
+                "WHERE company_id = :cid AND bsale_office_id = ANY(:ids)"
+            ), {"cid": cid, "ids": otras_ids})).mappings().all()
+        }
+        stock_rows = (await db.execute(text("""
+            SELECT v.display_code AS sku, sl.bsale_office_id AS oid,
+                   SUM(sl.quantity_available) AS stock
+            FROM stock_levels sl
+            JOIN variants v ON v.company_id = sl.company_id AND v.bsale_variant_id = sl.bsale_variant_id
+            WHERE sl.company_id = :cid
+              AND v.display_code = ANY(:skus)
+              AND sl.bsale_office_id = ANY(:ids)
+            GROUP BY v.display_code, sl.bsale_office_id
+        """), {"cid": cid, "skus": sku_codes, "ids": otras_ids})).mappings().all()
+        stock_map: dict[str, dict[int, float]] = {}
+        for sr in stock_rows:
+            stock_map.setdefault(str(sr["sku"]), {})[int(sr["oid"])] = float(sr["stock"] or 0)
+
+        stock_cols = [f"Stock {onames.get(oid, oid)}" for oid in otras_ids]
+        cols.extend(stock_cols)
+        for r in filtered_rows:
+            sku = str(r.get("Código SKU") or "")
+            for oid, col in zip(otras_ids, stock_cols):
+                val = stock_map.get(sku, {}).get(oid, 0.0)
+                r[col] = int(val) if val > 0 else None
+
     # 2) Venta por categoría — para la pestaña final (tabla simple con ticket promedio).
     cats = await sales_by_category(days=days, office_id=office_id, company=company, db=db)
     total_v = sum(float(c.get("ventas") or 0) for c in cats) or 1.0
@@ -1664,6 +1848,8 @@ async def compras_catalogo_excel(
         sucursal_filtro=suc_name,
         brand_name=settings.BRAND_NAME,
         similares_map=similares_map,
+        show_margin=True,
+        extra_stock_cols=stock_cols,
     )
 
     buf = io.BytesIO()

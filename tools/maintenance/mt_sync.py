@@ -52,6 +52,8 @@ from harvester.sync_masters import (
     sync_document_types,
     sync_variants,
     sync_variant_costs,
+    sync_variant_costs_by_office,
+    sync_price_lists,
     sync_stock_levels,
     snapshot_stock_history,
     sync_product_type_attributes,
@@ -167,6 +169,8 @@ def run_pipeline_for_company(
         ("8.Attrs_Variantes",   sync_variant_attribute_values),
         ("9.Stock",             sync_stock_levels),
         ("10.Costos",           sync_variant_costs),
+        ("11.CostosSucursal",   sync_variant_costs_by_office),
+        ("12.ListasPrecio",     sync_price_lists),
     ]
     for nombre, func in fases:
         t0 = time.time()
@@ -183,42 +187,42 @@ def run_pipeline_for_company(
         t0 = time.time()
         try:
             r = snapshot_stock_history()
-            phase_results["11.StockHistory"] = {
+            phase_results["13.StockHistory"] = {
                 "resultado": str(r), "duracion_s": round(time.time() - t0, 1),
             }
         except Exception as exc:
-            phase_results["11.StockHistory"] = {"ERROR": str(exc)}
+            phase_results["13.StockHistory"] = {"ERROR": str(exc)}
             logger.exception("  StockHistory FALLO: %s", exc)
 
     t0 = time.time()
     try:
         r = sync_receptions()
-        phase_results["12.Recepciones"] = {
+        phase_results["14.Recepciones"] = {
             "resultado": str(r), "duracion_s": round(time.time() - t0, 1),
         }
     except Exception as exc:
-        phase_results["12.Recepciones"] = {"ERROR": str(exc)}
+        phase_results["14.Recepciones"] = {"ERROR": str(exc)}
         logger.exception("  Recepciones FALLO: %s", exc)
 
     t0 = time.time()
     try:
         r = sync_consumptions()
-        phase_results["13.Consumos"] = {
+        phase_results["15.Consumos"] = {
             "resultado": str(r), "duracion_s": round(time.time() - t0, 1),
         }
     except Exception as exc:
-        phase_results["13.Consumos"] = {"ERROR": str(exc)}
+        phase_results["15.Consumos"] = {"ERROR": str(exc)}
         logger.exception("  Consumos FALLO: %s", exc)
 
     if not skip_documents:
         t0 = time.time()
         try:
             r = sync_documents(since_unix=since_unix)
-            phase_results["14.Documentos"] = {
+            phase_results["16.Documentos"] = {
                 "resultado": str(r), "duracion_s": round(time.time() - t0, 1),
             }
         except Exception as exc:
-            phase_results["14.Documentos"] = {"ERROR": str(exc)}
+            phase_results["16.Documentos"] = {"ERROR": str(exc)}
             logger.exception("  Documentos FALLO: %s", exc)
 
     clear_current_tenant()

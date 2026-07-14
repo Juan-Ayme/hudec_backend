@@ -278,8 +278,8 @@ async def _capital_atrapado(
                CASE WHEN r90.unds_recibidas > 0
                     THEN COALESCE(vp.unds_vendidas_post, 0) / r90.unds_recibidas * 100
                     ELSE NULL END                    AS sellthrough_pct,
-               COALESCE(vc.effective_cost, 0)        AS costo_unit,
-               (sl.quantity_available * COALESCE(vc.effective_cost, 0)) AS capital_atrapado_pen
+               COALESCE(vco.effective_cost, vc.effective_cost, 0)        AS costo_unit,
+               (sl.quantity_available * COALESCE(vco.effective_cost, vc.effective_cost, 0)) AS capital_atrapado_pen
         FROM recibidos_90d r90
         JOIN variants v  ON v.bsale_variant_id  = r90.bsale_variant_id AND v.company_id = :cid
         JOIN products p  ON p.bsale_product_id  = v.bsale_product_id   AND p.company_id = v.company_id
@@ -294,6 +294,10 @@ async def _capital_atrapado(
         LEFT JOIN variant_costs vc
                ON vc.bsale_variant_id = r90.bsale_variant_id
               AND vc.company_id       = :cid
+        LEFT JOIN variant_costs_by_office vco
+               ON vco.bsale_variant_id = r90.bsale_variant_id
+              AND vco.company_id       = :cid
+              AND vco.bsale_office_id  = r90.bsale_office_id
         WHERE r90.unds_recibidas > 0
           AND COALESCE(sl.quantity_available, 0) > 0
           AND (COALESCE(vp.unds_vendidas_post, 0) / r90.unds_recibidas) < 0.20
@@ -343,7 +347,7 @@ async def _capital_atrapado(
             GROUP BY dd.bsale_variant_id, doc.bsale_office_id
         )
         SELECT COUNT(*) AS n,
-               COALESCE(SUM(sl.quantity_available * COALESCE(vc.effective_cost, 0)), 0) AS total_pen
+               COALESCE(SUM(sl.quantity_available * COALESCE(vco.effective_cost, vc.effective_cost, 0)), 0) AS total_pen
         FROM recibidos_90d r90
         LEFT JOIN vendidos_post vp
                ON vp.bsale_variant_id = r90.bsale_variant_id
@@ -355,6 +359,10 @@ async def _capital_atrapado(
         LEFT JOIN variant_costs vc
                ON vc.bsale_variant_id = r90.bsale_variant_id
               AND vc.company_id       = :cid
+        LEFT JOIN variant_costs_by_office vco
+               ON vco.bsale_variant_id = r90.bsale_variant_id
+              AND vco.company_id       = :cid
+              AND vco.bsale_office_id  = r90.bsale_office_id
         WHERE r90.unds_recibidas > 0
           AND COALESCE(sl.quantity_available, 0) > 0
           AND (COALESCE(vp.unds_vendidas, 0) / r90.unds_recibidas) < 0.20
@@ -405,14 +413,15 @@ async def _candidatos_descuento(
                o.name                     AS sucursal,
                sl.bsale_office_id         AS office_id,
                sl.quantity_available      AS stock,
-               COALESCE(vc.effective_cost, 0)                        AS costo_unit,
-               (sl.quantity_available * COALESCE(vc.effective_cost, 0)) AS valor_inventario_pen
+               COALESCE(vco.effective_cost, vc.effective_cost, 0)                        AS costo_unit,
+               (sl.quantity_available * COALESCE(vco.effective_cost, vc.effective_cost, 0)) AS valor_inventario_pen
         FROM stock_levels sl
         JOIN variants v  ON v.bsale_variant_id = sl.bsale_variant_id AND v.company_id = sl.company_id AND v.is_active
         JOIN products p  ON p.bsale_product_id = v.bsale_product_id  AND p.company_id = v.company_id  AND p.is_active
         LEFT JOIN v_products_full vpf ON vpf.bsale_product_id = v.bsale_product_id AND vpf.company_id = v.company_id
         LEFT JOIN offices o          ON o.bsale_office_id  = sl.bsale_office_id  AND o.company_id  = sl.company_id
         LEFT JOIN variant_costs vc   ON vc.bsale_variant_id = sl.bsale_variant_id AND vc.company_id = sl.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = sl.bsale_variant_id AND vco.company_id = sl.company_id AND vco.bsale_office_id = sl.bsale_office_id
         LEFT JOIN ventas_60d vv
                ON vv.bsale_variant_id = sl.bsale_variant_id
               AND vv.bsale_office_id  = sl.bsale_office_id
@@ -452,12 +461,13 @@ async def _candidatos_descuento(
             GROUP BY dd.bsale_variant_id, doc.bsale_office_id
         )
         SELECT COUNT(*) AS n,
-               COALESCE(SUM(sl.quantity_available * COALESCE(vc.effective_cost, 0)), 0) AS total
+               COALESCE(SUM(sl.quantity_available * COALESCE(vco.effective_cost, vc.effective_cost, 0)), 0) AS total
         FROM stock_levels sl
         JOIN variants v ON v.bsale_variant_id = sl.bsale_variant_id AND v.company_id = sl.company_id AND v.is_active
         JOIN products p ON p.bsale_product_id = v.bsale_product_id  AND p.company_id = v.company_id  AND p.is_active
         LEFT JOIN v_products_full vpf ON vpf.bsale_product_id = v.bsale_product_id AND vpf.company_id = v.company_id
         LEFT JOIN variant_costs vc ON vc.bsale_variant_id = sl.bsale_variant_id AND vc.company_id = sl.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = sl.bsale_variant_id AND vco.company_id = sl.company_id AND vco.bsale_office_id = sl.bsale_office_id
         LEFT JOIN ventas_60d vv
                ON vv.bsale_variant_id = sl.bsale_variant_id
               AND vv.bsale_office_id  = sl.bsale_office_id

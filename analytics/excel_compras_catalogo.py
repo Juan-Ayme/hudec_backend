@@ -528,12 +528,20 @@ def build_compras_catalogo_workbook_jerarquico(
     sucursal_filtro: str | None,
     brand_name: str,
     similares_map: dict[str, dict] | None = None,
+    show_margin: bool = False,
+    extra_stock_cols: list[str] | None = None,
 ) -> Workbook:
     """Workbook ejecutivo (resumen + 1 hoja por Departamento) + pestaña Venta por categoría.
 
     Reutiliza el mismo builder que el Excel de /ventas-jerarquicas
     (`analytics.excel_executive.build_executive_workbook`) para que la jerarquía
     y los estilos coincidan. Las filas se reciben ya filtradas a quiebre real.
+
+    show_margin      → agrega "Utilidad (S/)" y "Margen %".
+    extra_stock_cols → nombres de columnas de stock de OTRAS sucursales
+                       (ej. ["Stock KAWII ASAMBLEA"]). Ambas van al FINAL de la
+                       tabla para no desplazar las constantes COL_* (evita el
+                       desalineado de las filas de subtotal).
     """
     from analytics.excel_executive import build_executive_workbook
 
@@ -554,6 +562,8 @@ def build_compras_catalogo_workbook_jerarquico(
         accion_label="Compras & Catálogo",
         periodo_dias=90,
         similares_map=similares_map,
+        show_margin=show_margin,
+        extra_stock_cols=extra_stock_cols,
     )
 
     # Agregar pestaña final "Venta por categoría" con la tabla simple + ticket prom.

@@ -305,16 +305,18 @@ def sync_offices() -> dict:
                 _clean_str(item.get("country"), "Peru"),
                 item.get("isVirtual") == 1,
                 _bsale_state_active(item.get("state")),
+                _safe_int(item.get("defaultPriceList")) or None,  # lista de precio por defecto de la sucursal
             ))
 
         sql = """
             INSERT INTO offices (company_id, bsale_office_id, name, address, district, city,
-                                 country, is_virtual, is_active, synced_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                                 country, is_virtual, is_active, default_price_list_id, synced_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (company_id, bsale_office_id) DO UPDATE SET
                 name = EXCLUDED.name, address = EXCLUDED.address,
                 district = EXCLUDED.district, city = EXCLUDED.city,
                 is_virtual = EXCLUDED.is_virtual, is_active = EXCLUDED.is_active,
+                default_price_list_id = EXCLUDED.default_price_list_id,
                 synced_at = NOW()
         """
         stats["inserted"] = db.execute_batch(sql, rows)
@@ -860,6 +862,191 @@ def sync_variant_costs() -> dict:
         no_cost = sum(1 for r in rows if r[5] == 0.0) - recuperados
         if no_cost > 0:
             logger.warning("%d variantes sin costo (ni BSale ni recepciones)", no_cost)
+
+        db.sync_finish(log_id, fetched=stats["fetched"], inserted=stats["inserted"],
+                        skipped=stats["skipped"])
+    except Exception as exc:
+        db.sync_finish(log_id, status="FAILED", error=str(exc),
+                        fetched=stats["fetched"])
+        raise
+
+    return stats
+
+
+# ============================================================
+# VARIANT COSTS BY OFFICE (costo por sucursal — pura SQL, sin BSale)
+# ============================================================
+
+def sync_variant_costs_by_office() -> dict:
+    """Deriva el costo POR SUCURSAL desde reception_details.
+
+    Es la versión por-oficina del fallback de recepciones que ya vive en
+    sync_variant_costs: en vez de colapsar todas las sucursales a un costo
+    global por variante, agrupa por (empresa, oficina, variante). Así una
+    misma variante puede tener 0.80 en una tienda y 2.90 en otra.
+
+    Pura SQL (no llama a BSale): lee las recepciones ya sincronizadas. Se
+    apoya en reception_details.cost + receptions.bsale_office_id.
+    """
+    log_id = db.sync_start("variant_costs_by_office")
+    stats = {"inserted": 0}
+
+    try:
+        cid = current_company_id()
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO variant_costs_by_office
+                        (company_id, bsale_office_id, bsale_variant_id,
+                         average_cost, latest_cost, effective_cost, cost_source, synced_at)
+                    WITH agregados AS (
+                        SELECT rec.bsale_office_id,
+                               rd.bsale_variant_id,
+                               SUM(rd.quantity * rd.cost) FILTER (WHERE rd.cost > 0)
+                                 / NULLIF(SUM(rd.quantity) FILTER (WHERE rd.cost > 0), 0) AS avg_cost,
+                               (
+                                 SELECT rd2.cost
+                                 FROM reception_details rd2
+                                 JOIN receptions rec2 ON rec2.bsale_reception_id = rd2.bsale_reception_id
+                                                       AND rec2.company_id = rd2.company_id
+                                 WHERE rd2.bsale_variant_id = rd.bsale_variant_id
+                                   AND rd2.company_id = %(cid)s
+                                   AND rec2.bsale_office_id = rec.bsale_office_id
+                                   AND rd2.cost > 0
+                                 ORDER BY rec2.admission_date DESC
+                                 LIMIT 1
+                               ) AS latest_cost
+                        FROM reception_details rd
+                        JOIN receptions rec ON rec.bsale_reception_id = rd.bsale_reception_id
+                                            AND rec.company_id = rd.company_id
+                        WHERE rd.company_id = %(cid)s
+                        GROUP BY rec.bsale_office_id, rd.bsale_variant_id
+                    )
+                    SELECT %(cid)s, bsale_office_id, bsale_variant_id,
+                           COALESCE(avg_cost, 0),
+                           COALESCE(latest_cost, 0),
+                           COALESCE(avg_cost, latest_cost, 0),
+                           CASE WHEN avg_cost    > 0 THEN 'RECEPTION_AVG'
+                                WHEN latest_cost > 0 THEN 'RECEPTION_LATEST'
+                                ELSE 'NONE' END,
+                           NOW()
+                    FROM agregados
+                    WHERE avg_cost > 0 OR latest_cost > 0
+                    ON CONFLICT (company_id, bsale_office_id, bsale_variant_id) DO UPDATE SET
+                        average_cost   = EXCLUDED.average_cost,
+                        latest_cost    = EXCLUDED.latest_cost,
+                        effective_cost = EXCLUDED.effective_cost,
+                        cost_source    = EXCLUDED.cost_source,
+                        synced_at      = NOW()
+                """, {"cid": cid})
+                stats["inserted"] = cur.rowcount or 0
+
+        logger.info("Costos por sucursal: %d filas (empresa=%d)", stats["inserted"], cid)
+        db.sync_finish(log_id, inserted=stats["inserted"])
+    except Exception as exc:
+        db.sync_finish(log_id, status="FAILED", error=str(exc))
+        raise
+
+    return stats
+
+
+# ============================================================
+# PRICE LISTS (listas de precio: cabecera + detalle por variante)
+# ============================================================
+
+def sync_price_lists() -> dict:
+    """Sincroniza las listas de precio de BSale (el precio de VENTA real).
+
+    Cabecera: paginate("/price_lists.json") — pocas listas, serial.
+    Detalle: 1 call por lista a /price_lists/{id}/details.json, paralelizado
+    con ThreadPoolExecutor (mismo patrón que sync_variant_costs).
+    """
+    log_id = db.sync_start("price_lists")
+    stats = {"fetched": 0, "inserted": 0, "skipped": 0, "details_inserted": 0}
+
+    try:
+        cid = current_company_id()
+
+        # ── 1. Cabeceras ────────────────────────────────────────────
+        items = paginate("/price_lists.json")
+        stats["fetched"] = len(items)
+
+        header_rows = []
+        price_list_ids = []
+        for item in items:
+            plid = _safe_int(item.get("id"))
+            if plid == 0:
+                db.log_quality_issue("price_lists", None, "id", "INVALID_TYPE",
+                                     "Price list sin ID valido", str(item.get("id")))
+                stats["skipped"] += 1
+                continue
+            coin = item.get("coin") or {}
+            header_rows.append((
+                cid,
+                plid,
+                _clean_str(item.get("name"), "SIN NOMBRE"),
+                _clean_str(item.get("description")),
+                _safe_int(coin.get("id")) or None,      # coin_id: NULL si 0/ausente
+                _bsale_state_active(item.get("state")),  # state 0 → activo
+            ))
+            price_list_ids.append(plid)
+
+        sql_header = """
+            INSERT INTO price_lists (company_id, bsale_price_list_id, name, description,
+                                     coin_id, is_active, synced_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (company_id, bsale_price_list_id) DO UPDATE SET
+                name        = EXCLUDED.name,
+                description = EXCLUDED.description,
+                coin_id     = EXCLUDED.coin_id,
+                is_active   = EXCLUDED.is_active,
+                synced_at   = NOW()
+        """
+        stats["inserted"] = db.execute_batch(sql_header, header_rows)
+        logger.info("Sincronizando detalles de %d listas de precio...", len(price_list_ids))
+
+        # ── 2. Detalle: precio por variante (paralelo, 1 call por lista) ─
+        def _fetch_details(plid: int) -> list:
+            url = f"{BSALE_BASE_URL}/price_lists/{plid}/details.json"
+            detail_items = fetch_subresource(url, page_size=50)
+            out = []
+            for d in detail_items:
+                variant = d.get("variant") or {}
+                vid = _safe_int(variant.get("id"))
+                if vid == 0:
+                    continue
+                try:
+                    net = float(d.get("variantValue") or 0)
+                except (ValueError, TypeError):
+                    net = 0.0
+                try:
+                    with_tax = float(d.get("variantValueWithTaxes") or 0)
+                except (ValueError, TypeError):
+                    with_tax = 0.0
+                out.append((cid, plid, vid, net, with_tax))
+            return out
+
+        detail_rows = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=BSALE_MAX_WORKERS) as exe:
+            futures = {exe.submit(_fetch_details, plid): plid for plid in price_list_ids}
+            done = 0
+            for future in concurrent.futures.as_completed(futures):
+                detail_rows.extend(future.result())
+                done += 1
+                if done % 20 == 0:
+                    logger.info("Listas de precio: %d/%d procesadas", done, len(price_list_ids))
+
+        sql_detail = """
+            INSERT INTO price_list_details (company_id, bsale_price_list_id, bsale_variant_id,
+                                            net_value, value_with_taxes, synced_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (company_id, bsale_price_list_id, bsale_variant_id) DO UPDATE SET
+                net_value        = EXCLUDED.net_value,
+                value_with_taxes = EXCLUDED.value_with_taxes,
+                synced_at        = NOW()
+        """
+        stats["details_inserted"] = db.execute_batch(sql_detail, detail_rows)
+        logger.info("Detalles de precio insertados: %d", stats["details_inserted"])
 
         db.sync_finish(log_id, fetched=stats["fetched"], inserted=stats["inserted"],
                         skipped=stats["skipped"])
