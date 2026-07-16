@@ -17,8 +17,11 @@ Esto rescata ~97% de los SKUs sin costo (los que sí tienen recepciones).
 from __future__ import annotations
 
 from typing import Any, Optional
+import io
 
+import pandas as pd
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -254,3 +257,282 @@ async def backfill_from_receptions(
             "Nada que actualizar."
         ),
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Diagnóstico de costos por sucursal — variación + salud
+# ════════════════════════════════════════════════════════════════════════════
+
+from pathlib import Path
+from collections import defaultdict
+
+_SQL_DIR = Path(__file__).resolve().parent.parent / "kawii_matrix" / "sql"
+
+
+@router.get("/by-office")
+async def costs_by_office(
+    days: int = Query(90, ge=7, le=365, description="Ventana de ventas en días"),
+    umbral_margen_bajo: float = Query(20.0, ge=0, le=100, description="% mínimo de margen aceptable"),
+    umbral_margen_alto: float = Query(70.0, ge=0, le=100, description="% máximo de margen razonable (sospechoso si supera)"),
+    umbral_outlier_pct: float = Query(50.0, ge=0, description="% de desviación vs promedio para considerar outlier"),
+    umbral_desactualizado_pct: float = Query(20.0, ge=0, description="% de diferencia vs última recepción"),
+    umbral_ratio_max_min: float = Query(2.0, ge=1.0, description="Ratio MAX/MIN entre sucursales para variación alta"),
+    solo_problemas: bool = Query(False, description="Si true, solo devuelve ERROR + WARNING"),
+    page: int = Query(1, ge=1, description="Número de página para resultados"),
+    page_size: int = Query(100, ge=1, le=1000, description="Cantidad de resultados por página"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Diagnóstico de costos por sucursal: variación + validación de salud.
+
+    Analiza cada variante × sucursal y diagnostica si el costo está bien o mal
+    usando 8 reglas de validación. Cada fila indica DE QUÉ TABLA sale el costo
+    y el precio.
+
+    ❌ ERROR:
+      - COSTO_CERO: sin costo cargado
+      - MARGEN_NEGATIVO: costo > precio de venta
+
+    ⚠️ WARNING:
+      - MARGEN_MUY_BAJO: margen < 20%
+      - MARGEN_MUY_ALTO: margen > 70% (sospechoso, posible costo mal cargado)
+      - COSTO_OUTLIER: costo muy diferente al promedio entre sucursales
+      - SIN_RECEPCION: sin respaldo de recepciones
+      - COSTO_DESACTUALIZADO: costo no refleja la última compra real
+      - VARIACION_ALTA: ratio MAX/MIN alto entre sucursales
+    """
+    # Cargar sucursales objetivo desde config
+    from harvester.config import OFFICES_TIENDA
+    sucursales = OFFICES_TIENDA
+
+    # Leer el SQL
+    sql_path = _SQL_DIR / "09_costos_por_sucursal.sql"
+    sql_text = sql_path.read_text(encoding="utf-8")
+
+    params = {
+        "days": days,
+        "sucursales_objetivo": sucursales,
+        "umbral_margen_bajo": umbral_margen_bajo,
+        "umbral_margen_alto": umbral_margen_alto,
+        "umbral_outlier_pct": umbral_outlier_pct,
+        "umbral_desactualizado_pct": umbral_desactualizado_pct,
+        "umbral_ratio_max_min": umbral_ratio_max_min,
+    }
+
+    result = await db.execute(text(sql_text), params)
+    rows = result.mappings().all()
+
+    # ── Procesar resultados ──────────────────────────────────────────────
+
+    # Contadores de salud
+    conteo_severidad: dict[str, int] = {"ERROR": 0, "WARNING": 0, "OK": 0}
+    conteo_alertas: dict[str, int] = defaultdict(int)
+    impacto_total = 0.0
+    variantes_vistas: set[int] = set()
+
+    detalle: list[dict[str, Any]] = []
+
+    for r in rows:
+        sev = r["severidad"]
+        alertas = list(r["alertas"]) if r["alertas"] else []
+
+        if solo_problemas and sev == "OK":
+            continue
+
+        conteo_severidad[sev] = conteo_severidad.get(sev, 0) + 1
+        for a in alertas:
+            conteo_alertas[a] += 1
+        impacto_total += abs(float(r["impacto_soles"] or 0))
+        variantes_vistas.add(int(r["bsale_variant_id"]))
+
+        detalle.append({
+            "bsale_office_id":         int(r["bsale_office_id"]),
+            "sucursal":                r["sucursal"],
+            "bsale_variant_id":        int(r["bsale_variant_id"]),
+            "codigo_sku":              r["codigo_sku"],
+            "producto":                r["producto"],
+            "costo_efectivo":          float(r["costo_efectivo"] or 0),
+            "costo_origen":            r["costo_origen"],
+            "tabla_costo":             r["tabla_costo"],
+            "precio_venta":            float(r["precio_venta"] or 0),
+            "tabla_precio":            r["tabla_precio"],
+            "margen_soles":            float(r["margen_soles"] or 0),
+            "margen_pct":              float(r["margen_pct"]) if r["margen_pct"] is not None else None,
+            "costo_avg_sucursales":    float(r["costo_avg_sucursales"] or 0),
+            "costo_min_sucursales":    float(r["costo_min_sucursales"] or 0),
+            "costo_max_sucursales":    float(r["costo_max_sucursales"] or 0),
+            "diff_vs_avg_pct":         float(r["diff_vs_avg_pct"] or 0),
+            "ratio_max_min":           float(r["ratio_max_min"] or 1),
+            "ultimo_costo_recepcion":  float(r["ultimo_costo_recepcion"] or 0),
+            "n_recepciones":           int(r["n_recepciones"] or 0),
+            "uds_vendidas_periodo":    float(r["uds_vendidas_periodo"] or 0),
+            "impacto_soles":           float(r["impacto_soles"] or 0),
+            "severidad":               sev,
+            "alertas":                 alertas,
+        })
+
+    total_filas = conteo_severidad["ERROR"] + conteo_severidad["WARNING"] + conteo_severidad["OK"]
+    total_items_filtrados = len(detalle)
+    total_pages = (total_items_filtrados + page_size - 1) // page_size
+
+    # Paginar el detalle
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    paginated_detalle = detalle[start_idx:end_idx]
+
+    return {
+        "resumen": {
+            "ventana_dias":                days,
+            "variantes_analizadas":        len(variantes_vistas),
+            "filas_total":                 total_filas,
+            "salud": {
+                "ok":       conteo_severidad["OK"],
+                "warning":  conteo_severidad["WARNING"],
+                "error":    conteo_severidad["ERROR"],
+                "pct_ok":   round(conteo_severidad["OK"] / max(1, total_filas) * 100, 1),
+            },
+            "problemas_por_tipo":          dict(conteo_alertas),
+            "impacto_total_soles":         round(impacto_total, 2),
+        },
+        "paginacion": {
+            "page":         page,
+            "page_size":    page_size,
+            "total_items":  total_items_filtrados,
+            "total_pages":  total_pages,
+            "has_next":     page < total_pages,
+            "has_prev":     page > 1
+        },
+        "detalle": paginated_detalle,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Exportar a Excel (solo problemas)
+# ════════════════════════════════════════════════════════════════════════════
+
+@router.get("/by-office/export", dependencies=[Depends(require_operador_or_admin)])
+async def costs_by_office_export(
+    days: int = Query(90, ge=7, le=365, description="Ventana de ventas en días"),
+    umbral_margen_bajo: float = Query(20.0, ge=0, le=100, description="% mínimo de margen aceptable"),
+    umbral_margen_alto: float = Query(70.0, ge=0, le=100, description="% máximo de margen razonable (sospechoso si supera)"),
+    umbral_outlier_pct: float = Query(50.0, ge=0, description="% de desviación vs promedio para considerar outlier"),
+    umbral_desactualizado_pct: float = Query(20.0, ge=0, description="% de diferencia vs última recepción"),
+    umbral_ratio_max_min: float = Query(2.0, ge=1.0, description="Ratio MAX/MIN entre sucursales para variación alta"),
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+):
+    """Genera un Excel descargable con los productos que tienen problemas de costos (ERROR/WARNING)."""
+    
+    # Cargar sucursales objetivo desde config
+    from harvester.config import OFFICES_TIENDA
+    
+    # 1. Leer el SQL
+    sql_path = _SQL_DIR / "09_costos_por_sucursal.sql"
+    sql_text = sql_path.read_text(encoding="utf-8")
+    
+    params = {
+        "days": days,
+        "sucursales_objetivo": OFFICES_TIENDA,
+        "umbral_margen_bajo": umbral_margen_bajo,
+        "umbral_margen_alto": umbral_margen_alto,
+        "umbral_outlier_pct": umbral_outlier_pct,
+        "umbral_desactualizado_pct": umbral_desactualizado_pct,
+        "umbral_ratio_max_min": umbral_ratio_max_min,
+    }
+    
+    # 2. Ejecutar la consulta
+    result = await db.execute(text(sql_text), params)
+    rows = result.mappings().all()
+    
+    # 3. Filtrar y agrupar la data por SKU
+    grouped_data = {}
+    for r in rows:
+        sev = r["severidad"]
+        if sev == "OK":
+            continue
+            
+        vid = int(r["bsale_variant_id"])
+        
+        if vid not in grouped_data:
+            grouped_data[vid] = {
+                "SKU": r["codigo_sku"],
+                "PRODUCTO": r["producto"],
+                "sucursales": [],
+                "severidades": set(),
+                "alertas": set(),
+                "costos": {},
+                "precios": {},
+            }
+            
+        item = grouped_data[vid]
+        suc = r["sucursal"]
+        
+        item["sucursales"].append(suc)
+        item["severidades"].add(sev)
+        
+        if r["alertas"]:
+            item["alertas"].update(list(r["alertas"]))
+            
+        item["costos"][suc] = float(r["costo_efectivo"] or 0)
+        item["precios"][suc] = float(r["precio_venta"] or 0)
+        
+    export_data = []
+    for vid, item in grouped_data.items():
+        # Severidad global (si hay un ERROR, es ERROR, sino WARNING)
+        sev_global = "ERROR" if "ERROR" in item["severidades"] else "WARNING"
+        
+        # Alertas unificadas
+        alertas_global = ", ".join(sorted(item["alertas"]))
+        
+        # Sucursales afectadas
+        sucursales_str = ", ".join(sorted(item["sucursales"]))
+        
+        # Costo unificado
+        costos_unicos = set(item["costos"].values())
+        if len(costos_unicos) == 1:
+            costo_str = str(list(costos_unicos)[0])
+        else:
+            costo_str = " | ".join([f"{v} ({k})" for k, v in item["costos"].items()])
+            
+        # Precio unificado
+        precios_unicos = set(item["precios"].values())
+        if len(precios_unicos) == 1:
+            precio_str = str(list(precios_unicos)[0])
+        else:
+            precio_str = " | ".join([f"{v} ({k})" for k, v in item["precios"].items()])
+            
+        export_data.append({
+            "BSALE_VARIANT_ID": vid,
+            "SKU": item["SKU"],
+            "PRODUCTO": item["PRODUCTO"],
+            "SUCURSALES_AFECTADAS": sucursales_str,
+            "SEVERIDAD_GLOBAL": sev_global,
+            "ALERTAS_CONSOLIDADAS": alertas_global,
+            "COSTO_ACTUAL": costo_str,
+            "PRECIO_VENTA": precio_str,
+            "NUEVO_COSTO": ""
+        })
+        
+    # Si no hay data problemática, devolver un excel vacío con los headers
+    if not export_data:
+        export_data = [{
+            "BSALE_VARIANT_ID": "", "SKU": "", "PRODUCTO": "", 
+            "SUCURSALES_AFECTADAS": "", "SEVERIDAD_GLOBAL": "NO HAY PROBLEMAS", 
+            "ALERTAS_CONSOLIDADAS": "", "COSTO_ACTUAL": "", "PRECIO_VENTA": "", 
+            "NUEVO_COSTO": ""
+        }]
+        
+    # 4. Generar el Excel en memoria
+    df = pd.DataFrame(export_data)
+    
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Costos_a_Corregir')
+        
+    buffer.seek(0)
+    
+    # 5. Devolver el archivo
+    return StreamingResponse(
+        buffer, 
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=costos_a_corregir.xlsx"}
+    )
