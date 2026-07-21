@@ -38,7 +38,8 @@ WITH params AS (
         CAST(:umbral_margen_alto AS numeric)        AS umbral_margen_alto,
         CAST(:umbral_outlier_pct AS numeric)        AS umbral_outlier_pct,
         CAST(:umbral_desactualizado_pct AS numeric) AS umbral_desactualizado_pct,
-        CAST(:umbral_ratio_max_min AS numeric)      AS umbral_ratio_max_min
+        CAST(:umbral_ratio_max_min AS numeric)      AS umbral_ratio_max_min,
+        CAST(:incluir_igv_en_margen AS boolean)     AS incluir_igv_en_margen
 ),
 
 costos_base AS (
@@ -68,13 +69,25 @@ costos_base AS (
             ELSE 'SIN TABLA — sin lista de precios asignada'
         END                                                 AS tabla_precio,
         COALESCE(vco.cost_source, vc.cost_source, 'NONE')  AS cost_source,
-        COALESCE(pld.net_value, 0)                          AS precio_venta,
-        COALESCE(pld.net_value, 0)
-            - COALESCE(vco.effective_cost, vc.effective_cost, 0) AS margen_soles,
-        CASE WHEN COALESCE(pld.net_value, 0) > 0
+        COALESCE(pld.value_with_taxes, 0)                   AS precio_bruto,
+        COALESCE(pld.net_value, 0)                          AS precio_neto,
+        -- precio_venta respeta el toggle de IGV para que coincida con el margen
+        CASE 
+            WHEN par.incluir_igv_en_margen THEN COALESCE(pld.value_with_taxes, 0)
+            ELSE COALESCE(pld.net_value, 0)
+        END                                                 AS precio_venta,
+        CASE 
+            WHEN par.incluir_igv_en_margen THEN COALESCE(pld.value_with_taxes, 0)
+            ELSE COALESCE(pld.net_value, 0)
+        END                                                 AS precio_base_margen,
+        (CASE 
+            WHEN par.incluir_igv_en_margen THEN COALESCE(pld.value_with_taxes, 0)
+            ELSE COALESCE(pld.net_value, 0)
+         END) - COALESCE(vco.effective_cost, vc.effective_cost, 0) AS margen_soles,
+        CASE WHEN (CASE WHEN par.incluir_igv_en_margen THEN COALESCE(pld.value_with_taxes, 0) ELSE COALESCE(pld.net_value, 0) END) > 0
              THEN ROUND(
-                 (pld.net_value - COALESCE(vco.effective_cost, vc.effective_cost, 0))
-                 / pld.net_value * 100, 2
+                 ((CASE WHEN par.incluir_igv_en_margen THEN COALESCE(pld.value_with_taxes, 0) ELSE COALESCE(pld.net_value, 0) END) - COALESCE(vco.effective_cost, vc.effective_cost, 0))
+                 / (CASE WHEN par.incluir_igv_en_margen THEN COALESCE(pld.value_with_taxes, 0) ELSE COALESCE(pld.net_value, 0) END) * 100, 2
              )
              ELSE NULL
         END                                                 AS margen_pct
@@ -194,17 +207,17 @@ diagnostico AS (
         (cb.costo_efectivo = 0)                    AS flag_costo_cero,
 
         -- Regla 2: MARGEN_NEGATIVO (ERROR)
-        (cb.precio_venta > 0
-         AND cb.costo_efectivo > cb.precio_venta)  AS flag_margen_negativo,
+        (cb.precio_base_margen > 0
+         AND cb.costo_efectivo > cb.precio_base_margen)  AS flag_margen_negativo,
 
         -- Regla 3: MARGEN_MUY_BAJO (WARNING) — margen < 20%
-        (cb.precio_venta > 0
+        (cb.precio_base_margen > 0
          AND cb.costo_efectivo > 0
-         AND cb.costo_efectivo <= cb.precio_venta
+         AND cb.costo_efectivo <= cb.precio_base_margen
          AND cb.margen_pct < par.umbral_margen_bajo) AS flag_margen_bajo,
 
         -- Regla 3b: MARGEN_MUY_ALTO (WARNING) — margen > 70% (sospechoso: costo mal cargado?)
-        (cb.precio_venta > 0
+        (cb.precio_base_margen > 0
          AND cb.costo_efectivo > 0
          AND cb.margen_pct > par.umbral_margen_alto) AS flag_margen_alto,
 

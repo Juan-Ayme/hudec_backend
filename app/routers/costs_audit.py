@@ -271,6 +271,7 @@ _SQL_DIR = Path(__file__).resolve().parent.parent / "kawii_matrix" / "sql"
 
 @router.get("/by-office")
 async def costs_by_office(
+    office_id: Optional[int] = Query(None, description="Si se pasa, filtra a esa sucursal. Si no, analiza todas las tiendas."),
     days: int = Query(90, ge=7, le=365, description="Ventana de ventas en días"),
     umbral_margen_bajo: float = Query(20.0, ge=0, le=100, description="% mínimo de margen aceptable"),
     umbral_margen_alto: float = Query(70.0, ge=0, le=100, description="% máximo de margen razonable (sospechoso si supera)"),
@@ -278,6 +279,7 @@ async def costs_by_office(
     umbral_desactualizado_pct: float = Query(20.0, ge=0, description="% de diferencia vs última recepción"),
     umbral_ratio_max_min: float = Query(2.0, ge=1.0, description="Ratio MAX/MIN entre sucursales para variación alta"),
     solo_problemas: bool = Query(False, description="Si true, solo devuelve ERROR + WARNING"),
+    incluir_igv_en_margen: bool = Query(True, description="Si es True, calcula margen usando Precio Bruto. Si es False, usa Precio Neto."),
     page: int = Query(1, ge=1, description="Número de página para resultados"),
     page_size: int = Query(100, ge=1, le=1000, description="Cantidad de resultados por página"),
     db: AsyncSession = Depends(get_db),
@@ -302,7 +304,12 @@ async def costs_by_office(
     """
     # Cargar sucursales objetivo desde config
     from harvester.config import OFFICES_TIENDA
-    sucursales = OFFICES_TIENDA
+    # Si se pasa office_id, filtrar solo esa sucursal (validando que sea de tienda).
+    # Si no, analizar todas las tiendas.
+    if office_id is not None:
+        sucursales = [office_id] if office_id in OFFICES_TIENDA else OFFICES_TIENDA
+    else:
+        sucursales = OFFICES_TIENDA
 
     # Leer el SQL
     sql_path = _SQL_DIR / "09_costos_por_sucursal.sql"
@@ -316,6 +323,7 @@ async def costs_by_office(
         "umbral_outlier_pct": umbral_outlier_pct,
         "umbral_desactualizado_pct": umbral_desactualizado_pct,
         "umbral_ratio_max_min": umbral_ratio_max_min,
+        "incluir_igv_en_margen": incluir_igv_en_margen,
     }
 
     result = await db.execute(text(sql_text), params)
@@ -379,6 +387,11 @@ async def costs_by_office(
     end_idx = start_idx + page_size
     paginated_detalle = detalle[start_idx:end_idx]
 
+    nota = (
+        f"Analizando sucursal {sucursales[0]}" if office_id is not None
+        else f"Analizando {len(sucursales)} sucursales: {', '.join(str(s) for s in sucursales)}"
+    )
+
     return {
         "resumen": {
             "ventana_dias":                days,
@@ -402,6 +415,7 @@ async def costs_by_office(
             "has_prev":     page > 1
         },
         "detalle": paginated_detalle,
+        "nota": nota,
     }
 
 
@@ -411,12 +425,14 @@ async def costs_by_office(
 
 @router.get("/by-office/export", dependencies=[Depends(require_operador_or_admin)])
 async def costs_by_office_export(
+    office_id: Optional[int] = Query(None, description="Si se pasa, filtra a esa sucursal."),
     days: int = Query(90, ge=7, le=365, description="Ventana de ventas en días"),
     umbral_margen_bajo: float = Query(20.0, ge=0, le=100, description="% mínimo de margen aceptable"),
     umbral_margen_alto: float = Query(70.0, ge=0, le=100, description="% máximo de margen razonable (sospechoso si supera)"),
     umbral_outlier_pct: float = Query(50.0, ge=0, description="% de desviación vs promedio para considerar outlier"),
     umbral_desactualizado_pct: float = Query(20.0, ge=0, description="% de diferencia vs última recepción"),
     umbral_ratio_max_min: float = Query(2.0, ge=1.0, description="Ratio MAX/MIN entre sucursales para variación alta"),
+    incluir_igv_en_margen: bool = Query(True, description="Si es True, calcula margen usando Precio Bruto. Si es False, usa Precio Neto."),
     company: CurrentCompany = Depends(get_current_company),
     db: AsyncSession = Depends(get_db),
 ):
@@ -424,6 +440,10 @@ async def costs_by_office_export(
     
     # Cargar sucursales objetivo desde config
     from harvester.config import OFFICES_TIENDA
+    if office_id is not None:
+        sucursales = [office_id] if office_id in OFFICES_TIENDA else OFFICES_TIENDA
+    else:
+        sucursales = OFFICES_TIENDA
     
     # 1. Leer el SQL
     sql_path = _SQL_DIR / "09_costos_por_sucursal.sql"
@@ -431,12 +451,13 @@ async def costs_by_office_export(
     
     params = {
         "days": days,
-        "sucursales_objetivo": OFFICES_TIENDA,
+        "sucursales_objetivo": sucursales,
         "umbral_margen_bajo": umbral_margen_bajo,
         "umbral_margen_alto": umbral_margen_alto,
         "umbral_outlier_pct": umbral_outlier_pct,
         "umbral_desactualizado_pct": umbral_desactualizado_pct,
         "umbral_ratio_max_min": umbral_ratio_max_min,
+        "incluir_igv_en_margen": incluir_igv_en_margen,
     }
     
     # 2. Ejecutar la consulta
