@@ -233,6 +233,133 @@ async def sales_by_day(
     return [dict(r) for r in res.mappings().all()]
 
 
+@router.get("/sales-by-day/detail")
+async def sales_by_day_detail(
+    target_date: str = Query(..., description="Fecha YYYY-MM-DD"),
+    office_id: int | None = Query(None),
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Detalle de ventas de un día específico: productos vendidos, métricas y quiebres de stock."""
+    cid = company.company_id
+    company_config = await get_company(db, cid)
+    tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+
+    try:
+        parsed_date = date.fromisoformat(target_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de fecha inválido. Usar YYYY-MM-DD")
+
+    if office_id is not None:
+        office_filter_doc = "doc.bsale_office_id = :office_id"
+        office_filter_plain = "bsale_office_id = :office_id"
+        params = {"tdate": parsed_date, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
+    else:
+        office_filter_doc = _OFFICE_FILTER_DOC
+        office_filter_plain = _OFFICE_FILTER_PLAIN
+        params = {"tdate": parsed_date, "tipos_venta": tipos_venta, "cid": cid}
+
+    summary_q = f"""
+        SELECT ROUND(SUM(total_amount)::numeric, 2) AS ventas,
+               COUNT(*) AS tickets,
+               ROUND(AVG(CASE WHEN total_amount > 0 THEN total_amount END)::numeric, 2) AS ticket_promedio
+        FROM documents
+        WHERE company_id = :cid
+          AND (emission_date AT TIME ZONE '{_TZ}')::DATE = :tdate
+          AND COALESCE(is_credit_note, FALSE) = FALSE
+          AND bsale_document_type_id = ANY(:tipos_venta)
+          AND {office_filter_plain}
+    """
+    summary_res = (await db.execute(text(summary_q), params)).mappings().first()
+    ventas = float(summary_res["ventas"] or 0) if summary_res else 0.0
+    tickets = summary_res["tickets"] if summary_res else 0
+    t_prom = float(summary_res["ticket_promedio"] or 0) if summary_res else 0.0
+
+    prods_q = f"""
+        SELECT 
+            dd.bsale_variant_id,
+            COALESCE(v.sku, v.code, '') AS sku,
+            COALESCE(v.description, v.product_name, 'Sin nombre') AS producto,
+            COALESCE(vpf.department, 'Sin Dpto') AS departamento,
+            COALESCE(vpf.category, 'Sin Cat') AS categoria,
+            SUM(dd.quantity) AS unidades_vendidas,
+            ROUND(SUM(dd.total_amount)::numeric, 2) AS total_ventas,
+            COALESCE(SUM(sl.quantity_available), 0) AS stock_actual
+        FROM document_details dd
+        JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
+        JOIN variants v ON v.bsale_variant_id = dd.bsale_variant_id AND v.company_id = dd.company_id
+        LEFT JOIN v_product_full vpf ON vpf.product_id = v.bsale_product_id AND vpf.company_id = v.company_id
+        LEFT JOIN stock_levels sl ON sl.bsale_variant_id = v.bsale_variant_id AND sl.company_id = v.company_id
+        WHERE dd.company_id = :cid
+          AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE = :tdate
+          AND COALESCE(doc.is_credit_note, FALSE) = FALSE
+          AND doc.bsale_document_type_id = ANY(:tipos_venta)
+          AND {office_filter_doc}
+        GROUP BY dd.bsale_variant_id, v.sku, v.code, v.description, v.product_name, vpf.department, vpf.category
+        ORDER BY total_ventas DESC
+        LIMIT 50
+    """
+    prods_res = (await db.execute(text(prods_q), params)).mappings().all()
+
+    items = []
+    quiebres = []
+    for r in prods_res:
+        stk = float(r["stock_actual"] or 0)
+        en_quiebre = stk <= 2.0
+        item = {
+            "bsale_variant_id": r["bsale_variant_id"],
+            "sku": r["sku"],
+            "producto": r["producto"],
+            "departamento": r["departamento"],
+            "categoria": r["categoria"],
+            "unidades_vendidas": float(r["unidades_vendidas"] or 0),
+            "total_ventas": float(r["total_ventas"] or 0),
+            "stock_actual": stk,
+            "en_quiebre": en_quiebre,
+        }
+        items.append(item)
+        if en_quiebre:
+            quiebres.append(item)
+
+    offices_q = f"""
+        SELECT o.bsale_office_id,
+               o.name AS sucursal,
+               ROUND(SUM(doc.total_amount)::numeric, 2) AS ventas,
+               COUNT(*) AS tickets
+        FROM documents doc
+        JOIN offices o ON o.bsale_office_id = doc.bsale_office_id AND o.company_id = doc.company_id
+        WHERE doc.company_id = :cid
+          AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE = :tdate
+          AND COALESCE(doc.is_credit_note, FALSE) = FALSE
+          AND doc.bsale_document_type_id = ANY(:tipos_venta)
+        GROUP BY o.bsale_office_id, o.name
+        ORDER BY ventas DESC
+    """
+    offices_res = (await db.execute(text(offices_q), {"tdate": parsed_date, "tipos_venta": tipos_venta, "cid": cid})).mappings().all()
+
+    por_sucursal = [
+        {
+            "bsale_office_id": r["bsale_office_id"],
+            "sucursal": r["sucursal"],
+            "ventas": float(r["ventas"] or 0),
+            "tickets": r["tickets"],
+        }
+        for r in offices_res
+    ]
+
+    return {
+        "date": target_date,
+        "summary": {
+            "ventas": ventas,
+            "tickets": tickets,
+            "ticket_promedio": t_prom,
+        },
+        "productos": items,
+        "quiebres": quiebres,
+        "por_sucursal": por_sucursal,
+    }
+
+
 @router.get("/sales-by-department")
 async def sales_by_department(
     days: int = Query(30, ge=1, le=365),
