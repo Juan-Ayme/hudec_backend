@@ -288,7 +288,7 @@ async def sales_by_day_detail(
         FROM document_details dd
         JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
         JOIN variants v ON v.bsale_variant_id = dd.bsale_variant_id AND v.company_id = dd.company_id
-        LEFT JOIN v_product_full vpf ON vpf.product_id = v.bsale_product_id AND vpf.company_id = v.company_id
+        LEFT JOIN v_products_full vpf ON vpf.bsale_product_id = v.bsale_product_id AND vpf.company_id = v.company_id
         LEFT JOIN stock_levels sl ON sl.bsale_variant_id = v.bsale_variant_id AND sl.company_id = v.company_id
         WHERE dd.company_id = :cid
           AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE = :tdate
