@@ -278,8 +278,8 @@ async def sales_by_day_detail(
     prods_q = f"""
         SELECT 
             dd.bsale_variant_id,
-            COALESCE(v.sku, v.code, '') AS sku,
-            COALESCE(v.description, v.product_name, 'Sin nombre') AS producto,
+            COALESCE(v.code, '') AS sku,
+            COALESCE(vpf.product_name, v.description, 'Sin nombre') AS producto,
             COALESCE(vpf.department, 'Sin Dpto') AS departamento,
             COALESCE(vpf.category, 'Sin Cat') AS categoria,
             SUM(dd.quantity) AS unidades_vendidas,
@@ -295,7 +295,7 @@ async def sales_by_day_detail(
           AND COALESCE(doc.is_credit_note, FALSE) = FALSE
           AND doc.bsale_document_type_id = ANY(:tipos_venta)
           AND {office_filter_doc}
-        GROUP BY dd.bsale_variant_id, v.sku, v.code, v.description, v.product_name, vpf.department, vpf.category
+        GROUP BY dd.bsale_variant_id, v.code, vpf.product_name, v.description, vpf.department, vpf.category
         ORDER BY total_ventas DESC
         LIMIT 50
     """
