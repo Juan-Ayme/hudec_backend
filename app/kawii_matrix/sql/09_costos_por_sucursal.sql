@@ -48,6 +48,7 @@ costos_base AS (
         o.name                                              AS sucursal,
         v.bsale_variant_id,
         v.display_code                                      AS codigo_sku,
+        v.bar_code                                          AS codigo_barra,
         p.name                                              AS producto,
         COALESCE(vco.effective_cost, vc.effective_cost, 0)  AS costo_efectivo,
         CASE
@@ -264,6 +265,7 @@ SELECT
     sucursal,
     bsale_variant_id,
     codigo_sku,
+    codigo_barra,
     producto,
     costo_efectivo,
     costo_origen,

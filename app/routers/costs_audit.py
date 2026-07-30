@@ -357,6 +357,7 @@ async def costs_by_office(
             "sucursal":                r["sucursal"],
             "bsale_variant_id":        int(r["bsale_variant_id"]),
             "codigo_sku":              r["codigo_sku"],
+            "codigo_barra":            r["codigo_barra"],
             "producto":                r["producto"],
             "costo_efectivo":          float(r["costo_efectivo"] or 0),
             "costo_origen":            r["costo_origen"],
@@ -476,6 +477,7 @@ async def costs_by_office_export(
         if vid not in grouped_data:
             grouped_data[vid] = {
                 "SKU": r["codigo_sku"],
+                "BARCODE": r["codigo_barra"],
                 "PRODUCTO": r["producto"],
                 "sucursales": [],
                 "severidades": set(),
@@ -524,6 +526,7 @@ async def costs_by_office_export(
         export_data.append({
             "BSALE_VARIANT_ID": vid,
             "SKU": item["SKU"],
+            "CÓDIGO DE BARRA": item["BARCODE"],
             "PRODUCTO": item["PRODUCTO"],
             "SUCURSALES_AFECTADAS": sucursales_str,
             "SEVERIDAD_GLOBAL": sev_global,
@@ -536,7 +539,7 @@ async def costs_by_office_export(
     # Si no hay data problemática, devolver un excel vacío con los headers
     if not export_data:
         export_data = [{
-            "BSALE_VARIANT_ID": "", "SKU": "", "PRODUCTO": "", 
+            "BSALE_VARIANT_ID": "", "SKU": "", "CÓDIGO DE BARRA": "", "PRODUCTO": "", 
             "SUCURSALES_AFECTADAS": "", "SEVERIDAD_GLOBAL": "NO HAY PROBLEMAS", 
             "ALERTAS_CONSOLIDADAS": "", "COSTO_ACTUAL": "", "PRECIO_VENTA": "", 
             "NUEVO_COSTO": ""
