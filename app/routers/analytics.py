@@ -648,6 +648,7 @@ async def _evolucion_serie(
                COALESCE(unidades, 0)                                            AS unidades,
                COALESCE(tickets, 0)                                             AS tickets,
                ROUND((ventas / NULLIF(tickets, 0))::numeric, 2)                 AS ticket_promedio,
+               ROUND(neto::numeric, 2)                                          AS venta_neta,
                ROUND(margen_soles::numeric, 2)                                  AS margen_soles,
                ROUND((100.0 * margen_soles / NULLIF(neto, 0))::numeric, 1)      AS margen_pct,
                ROUND((100.0 * ventas
@@ -2546,3 +2547,427 @@ async def rotacion_historica(
         "por_clasificacion": por_clasificacion,
         "skus": skus,
     }
+
+
+# ── Rentabilidad: Margin Profitability Analysis ─────────────────────────
+
+
+@router.get("/margin-profitability-ranking")
+async def margin_profitability_ranking(
+    days: int = Query(30, ge=1, le=365),
+    office_id: int | None = Query(None),
+    level: str = Query("all", pattern="^(department|category|subcategory|all)$"),
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Ranking unificado de rentabilidad en los 3 niveles de la taxonomía.
+
+    Métricas nuevas respecto a endpoints existentes:
+    - margen_por_unidad: margen promedio por unidad vendida.
+    - pct_contribucion_margen: % de contribución al margen total de la empresa.
+    - Los 3 niveles unificados con parent_department y parent_category para drill-down.
+
+    Parameters:
+    - days: ventana de análisis.
+    - office_id: filtrar por sucursal (null = consolidado).
+    - level: department | category | subcategory | all.
+    """
+    dfrom, dto = _default_range(days)
+    cid = company.company_id
+    company_config = await get_company(db, cid)
+    tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+
+    if office_id is not None:
+        office_filter = "doc.bsale_office_id = :office_id"
+    else:
+        office_filter = _OFFICE_FILTER_DOC
+
+    # CTE base: solo líneas con costo conocido y no gratuitas.
+    base_cte = f"""
+    WITH ventas_con_costo AS (
+        SELECT
+            vpf.department,
+            vpf.category,
+            vpf.subcategory,
+            dd.net_amount,
+            dd.quantity,
+            dd.bsale_variant_id,
+            dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost) AS costo_linea,
+            dd.net_amount - dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost) AS margen_linea
+        FROM document_details dd
+        JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
+        JOIN variants v ON v.bsale_variant_id = dd.bsale_variant_id AND v.company_id = dd.company_id
+        JOIN v_products_full vpf ON vpf.bsale_product_id = v.bsale_product_id AND vpf.company_id = v.company_id
+        LEFT JOIN variant_costs vc ON vc.bsale_variant_id = dd.bsale_variant_id AND vc.company_id = dd.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = dd.bsale_variant_id
+            AND vco.company_id = dd.company_id AND vco.bsale_office_id = doc.bsale_office_id
+        WHERE dd.company_id = :cid
+          AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE >= :dfrom
+          AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE < :dto
+          AND COALESCE(doc.is_credit_note, FALSE) = FALSE
+          AND doc.bsale_document_type_id = ANY(:tipos_venta)
+          AND {office_filter}
+          AND COALESCE(vco.effective_cost, vc.effective_cost) IS NOT NULL
+          AND NOT COALESCE(dd.is_gratuity, FALSE)
+          AND vpf.department IS NOT NULL
+    ),
+    totales AS (
+        SELECT COALESCE(SUM(margen_linea), 0) AS margen_total_empresa
+        FROM ventas_con_costo
+    )
+    """
+
+    # Build queries per level requested
+    queries = []
+
+    if level in ("department", "all"):
+        queries.append(f"""
+        SELECT
+            'department' AS level,
+            department AS name,
+            NULL AS parent_department,
+            NULL AS parent_category,
+            ROUND(SUM(net_amount)::numeric, 2) AS venta_neta,
+            ROUND(SUM(costo_linea)::numeric, 2) AS costo_total,
+            ROUND(SUM(margen_linea)::numeric, 2) AS margen_bruto,
+            CASE WHEN SUM(net_amount) > 0
+                THEN ROUND((SUM(margen_linea) / SUM(net_amount) * 100)::numeric, 2)
+                ELSE 0 END AS margen_pct,
+            COUNT(DISTINCT bsale_variant_id) AS productos_unicos,
+            COALESCE(SUM(quantity), 0)::int AS unidades_vendidas,
+            ROUND((SUM(margen_linea) / NULLIF(SUM(quantity), 0))::numeric, 2) AS margen_por_unidad,
+            ROUND((SUM(margen_linea) * 100.0 / NULLIF((SELECT margen_total_empresa FROM totales), 0))::numeric, 2)
+                AS pct_contribucion_margen
+        FROM ventas_con_costo
+        GROUP BY department
+        """)
+
+    if level in ("category", "all"):
+        queries.append(f"""
+        SELECT
+            'category' AS level,
+            category AS name,
+            department AS parent_department,
+            NULL AS parent_category,
+            ROUND(SUM(net_amount)::numeric, 2) AS venta_neta,
+            ROUND(SUM(costo_linea)::numeric, 2) AS costo_total,
+            ROUND(SUM(margen_linea)::numeric, 2) AS margen_bruto,
+            CASE WHEN SUM(net_amount) > 0
+                THEN ROUND((SUM(margen_linea) / SUM(net_amount) * 100)::numeric, 2)
+                ELSE 0 END AS margen_pct,
+            COUNT(DISTINCT bsale_variant_id) AS productos_unicos,
+            COALESCE(SUM(quantity), 0)::int AS unidades_vendidas,
+            ROUND((SUM(margen_linea) / NULLIF(SUM(quantity), 0))::numeric, 2) AS margen_por_unidad,
+            ROUND((SUM(margen_linea) * 100.0 / NULLIF((SELECT margen_total_empresa FROM totales), 0))::numeric, 2)
+                AS pct_contribucion_margen
+        FROM ventas_con_costo
+        GROUP BY department, category
+        """)
+
+    if level in ("subcategory", "all"):
+        queries.append(f"""
+        SELECT
+            'subcategory' AS level,
+            subcategory AS name,
+            department AS parent_department,
+            category AS parent_category,
+            ROUND(SUM(net_amount)::numeric, 2) AS venta_neta,
+            ROUND(SUM(costo_linea)::numeric, 2) AS costo_total,
+            ROUND(SUM(margen_linea)::numeric, 2) AS margen_bruto,
+            CASE WHEN SUM(net_amount) > 0
+                THEN ROUND((SUM(margen_linea) / SUM(net_amount) * 100)::numeric, 2)
+                ELSE 0 END AS margen_pct,
+            COUNT(DISTINCT bsale_variant_id) AS productos_unicos,
+            COALESCE(SUM(quantity), 0)::int AS unidades_vendidas,
+            ROUND((SUM(margen_linea) / NULLIF(SUM(quantity), 0))::numeric, 2) AS margen_por_unidad,
+            ROUND((SUM(margen_linea) * 100.0 / NULLIF((SELECT margen_total_empresa FROM totales), 0))::numeric, 2)
+                AS pct_contribucion_margen
+        FROM ventas_con_costo
+        GROUP BY department, category, subcategory
+        """)
+
+    union_sql = " UNION ALL ".join(queries)
+    full_sql = f"{base_cte} {union_sql} ORDER BY margen_pct DESC"
+
+    params: dict[str, Any] = {
+        "cid": cid, "dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta,
+    }
+    if office_id is not None:
+        params["office_id"] = office_id
+
+    res = await db.execute(text(full_sql), params)
+    rows = [dict(r) for r in res.mappings().all()]
+
+    # Also return the global margin total for context
+    margen_total = sum(
+        float(r["margen_bruto"] or 0)
+        for r in rows if r["level"] == "department"
+    )
+    venta_total = sum(
+        float(r["venta_neta"] or 0)
+        for r in rows if r["level"] == "department"
+    )
+    margen_pct_global = (margen_total / venta_total * 100) if venta_total > 0 else 0
+
+    return {
+        "meta": {
+            "days": days,
+            "office_id": office_id,
+            "from": dfrom.isoformat(),
+            "to": dto.isoformat(),
+        },
+        "global": {
+            "margen_bruto": round(margen_total, 2),
+            "venta_neta": round(venta_total, 2),
+            "margen_pct": round(margen_pct_global, 2),
+        },
+        "ranking": rows,
+    }
+
+
+@router.get("/margin-comparative-matrix")
+async def margin_comparative_matrix(
+    days: int = Query(30, ge=1, le=365),
+    office_id: int | None = Query(None),
+    group_by: str = Query("department", pattern="^(department|category|subcategory)$"),
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Matriz comparativa margen% vs volumen de ventas.
+
+    Clasifica cada grupo en una de 4 categorías usando medianas automáticas:
+    - estrella:        margen >= mediana AND volumen >= mediana
+    - joya_oculta:     margen >= mediana AND volumen <  mediana
+    - trampa_volumen:  margen <  mediana AND volumen >= mediana
+    - debil:           margen <  mediana AND volumen <  mediana
+
+    Parameters:
+    - days: ventana de análisis.
+    - office_id: filtrar por sucursal.
+    - group_by: department | category | subcategory.
+    """
+    dfrom, dto = _default_range(days)
+    cid = company.company_id
+    company_config = await get_company(db, cid)
+    tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+
+    if office_id is not None:
+        office_filter = "doc.bsale_office_id = :office_id"
+    else:
+        office_filter = _OFFICE_FILTER_DOC
+
+    # Map group_by to the GROUP BY and SELECT columns
+    group_cols = {
+        "department":   "vpf.department",
+        "category":     "vpf.department, vpf.category",
+        "subcategory":  "vpf.department, vpf.category, vpf.subcategory",
+    }[group_by]
+
+    sql = f"""
+    WITH ventas_con_costo AS (
+        SELECT
+            vpf.department,
+            vpf.category,
+            vpf.subcategory,
+            dd.net_amount,
+            dd.quantity,
+            dd.bsale_variant_id,
+            dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost) AS costo_linea,
+            dd.net_amount - dd.quantity * COALESCE(vco.effective_cost, vc.effective_cost) AS margen_linea
+        FROM document_details dd
+        JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
+        JOIN variants v ON v.bsale_variant_id = dd.bsale_variant_id AND v.company_id = dd.company_id
+        JOIN v_products_full vpf ON vpf.bsale_product_id = v.bsale_product_id AND vpf.company_id = v.company_id
+        LEFT JOIN variant_costs vc ON vc.bsale_variant_id = dd.bsale_variant_id AND vc.company_id = dd.company_id
+        LEFT JOIN variant_costs_by_office vco ON vco.bsale_variant_id = dd.bsale_variant_id
+            AND vco.company_id = dd.company_id AND vco.bsale_office_id = doc.bsale_office_id
+        WHERE dd.company_id = :cid
+          AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE >= :dfrom
+          AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE < :dto
+          AND COALESCE(doc.is_credit_note, FALSE) = FALSE
+          AND doc.bsale_document_type_id = ANY(:tipos_venta)
+          AND {office_filter}
+          AND COALESCE(vco.effective_cost, vc.effective_cost) IS NOT NULL
+          AND NOT COALESCE(dd.is_gratuity, FALSE)
+          AND vpf.department IS NOT NULL
+    ),
+    agrupado AS (
+        SELECT
+            department,
+            category,
+            subcategory,
+            ROUND(SUM(net_amount)::numeric, 2) AS venta_neta,
+            ROUND(SUM(costo_linea)::numeric, 2) AS costo_total,
+            ROUND(SUM(margen_linea)::numeric, 2) AS margen_bruto,
+            CASE WHEN SUM(net_amount) > 0
+                THEN ROUND((SUM(margen_linea) / SUM(net_amount) * 100)::numeric, 2)
+                ELSE 0 END AS margen_pct,
+            COALESCE(SUM(quantity), 0)::int AS unidades,
+            COUNT(DISTINCT bsale_variant_id) AS productos
+        FROM ventas_con_costo
+        GROUP BY {group_cols}
+        HAVING SUM(net_amount) > 0
+    ),
+    medianas AS (
+        SELECT
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY margen_pct) AS mediana_margen,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY venta_neta) AS mediana_volumen
+        FROM agrupado
+    )
+    SELECT
+        a.*,
+        CASE
+            WHEN a.margen_pct >= m.mediana_margen AND a.venta_neta >= m.mediana_volumen THEN 'estrella'
+            WHEN a.margen_pct >= m.mediana_margen AND a.venta_neta <  m.mediana_volumen THEN 'joya_oculta'
+            WHEN a.margen_pct <  m.mediana_margen AND a.venta_neta >= m.mediana_volumen THEN 'trampa_volumen'
+            ELSE 'debil'
+        END AS clasificacion,
+        ROUND(m.mediana_margen::numeric, 2) AS mediana_margen,
+        ROUND(m.mediana_volumen::numeric, 2) AS mediana_volumen
+    FROM agrupado a, medianas m
+    ORDER BY a.margen_pct DESC
+    """
+
+    params: dict[str, Any] = {
+        "cid": cid, "dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta,
+    }
+    if office_id is not None:
+        params["office_id"] = office_id
+
+    res = await db.execute(text(sql), params)
+    rows = [dict(r) for r in res.mappings().all()]
+
+    # Extract medianas from first row (same for all)
+    mediana_margen = float(rows[0]["mediana_margen"]) if rows else 0
+    mediana_volumen = float(rows[0]["mediana_volumen"]) if rows else 0
+
+    # Clean mediana fields from individual rows (they're in meta)
+    for r in rows:
+        r.pop("mediana_margen", None)
+        r.pop("mediana_volumen", None)
+
+    # Count by classification
+    conteo = {"estrella": 0, "joya_oculta": 0, "trampa_volumen": 0, "debil": 0}
+    for r in rows:
+        c = r.get("clasificacion", "debil")
+        conteo[c] = conteo.get(c, 0) + 1
+
+    return {
+        "meta": {
+            "days": days,
+            "office_id": office_id,
+            "group_by": group_by,
+            "from": dfrom.isoformat(),
+            "to": dto.isoformat(),
+            "mediana_margen": mediana_margen,
+            "mediana_volumen": mediana_volumen,
+        },
+        "conteo": conteo,
+        "items": rows,
+    }
+
+from analytics.excel_compras_historico import build_compras_historico_workbook
+
+@router.get("/compras-historico/excel", response_class=StreamingResponse)
+async def compras_historico_excel(
+    start_date: str = Query(..., description="Fecha Inicio YYYY-MM-DD"),
+    end_date: str = Query(..., description="Fecha Fin YYYY-MM-DD"),
+    office_id: int | None = Query(None),
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    cid = company.company_id
+    company_config = await get_company(db, cid)
+    tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+    
+    try:
+        dt_start = date.fromisoformat(start_date)
+        dt_end = date.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de fecha inválido. Usar YYYY-MM-DD")
+        
+    dias_rango = max(1, (dt_end - dt_start).days + 1)
+    dias_cobertura = 10 # Según indicación
+
+    if office_id is not None:
+        office_filter_doc = "doc.bsale_office_id = :office_id"
+        office_filter_stock = "sl.bsale_office_id = :office_id"
+        params = {"start_date": dt_start, "end_date": dt_end, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
+    else:
+        office_filter_doc = _OFFICE_FILTER_DOC
+        office_filter_stock = "sl.bsale_office_id IN (" + _OFFICE_IDS_SQL + ")"
+        params = {"start_date": dt_start, "end_date": dt_end, "tipos_venta": tipos_venta, "cid": cid}
+
+    query = f"""
+        WITH stock_agrupado AS (
+            SELECT bsale_variant_id, SUM(quantity_available) AS stock_actual
+            FROM stock_levels sl
+            WHERE company_id = :cid AND {office_filter_stock}
+            GROUP BY bsale_variant_id
+        )
+        SELECT 
+            v.bsale_variant_id,
+            COALESCE(v.code, '') AS sku,
+            COALESCE(vpf.product_name, v.description, 'Sin nombre') AS producto,
+            COALESCE(vpf.department, 'Sin Dpto') AS departamento,
+            COALESCE(vpf.category, 'Sin Cat') AS categoria,
+            COALESCE(vpf.subcategory, 'Sin SubCat') AS subcategoria,
+            SUM(dd.quantity) AS unidades_vendidas,
+            ROUND(SUM(dd.total_amount)::numeric, 2) AS total_ventas,
+            COALESCE(sl.stock_actual, 0) AS stock_actual
+        FROM document_details dd
+        JOIN documents doc ON doc.bsale_document_id = dd.bsale_document_id AND doc.company_id = dd.company_id
+        JOIN variants v ON v.bsale_variant_id = dd.bsale_variant_id AND v.company_id = dd.company_id
+        LEFT JOIN v_products_full vpf ON vpf.bsale_product_id = v.bsale_product_id AND vpf.company_id = v.company_id
+        LEFT JOIN stock_agrupado sl ON sl.bsale_variant_id = v.bsale_variant_id
+        WHERE dd.company_id = :cid
+          AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE >= :start_date
+          AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE <= :end_date
+          AND COALESCE(doc.is_credit_note, FALSE) = FALSE
+          AND doc.bsale_document_type_id = ANY(:tipos_venta)
+          AND {office_filter_doc}
+        GROUP BY v.bsale_variant_id, v.code, vpf.product_name, v.description, vpf.department, vpf.category, vpf.subcategory, sl.stock_actual
+    """
+    
+    res = await db.execute(text(query), params)
+    rows = [dict(r) for r in res.mappings().all()]
+    
+    # Process calculations
+    for r in rows:
+        unds = float(r["unidades_vendidas"] or 0)
+        stock = float(r["stock_actual"] or 0)
+        ritmo = unds / dias_rango
+        
+        r["ritmo_venta"] = ritmo
+        r["estado_stock"] = "🔴 Agotado" if stock <= 0 else "🟢 Con Stock"
+        
+        # Sugerencia de compra para 'dias_cobertura' días descontando el stock actual
+        cobertura_necesaria = ritmo * dias_cobertura
+        sugerencia = cobertura_necesaria - stock
+        r["sugerencia_compra"] = max(0, round(sugerencia))
+
+    brand = company_config.get("name", "KAWII")
+    sucursal = "Sucursal Específica" if office_id else "Todas" # Ideally we fetch the name
+    
+    wb = build_compras_historico_workbook(
+        rows=rows,
+        start_date=start_date,
+        end_date=end_date,
+        dias_rango=dias_rango,
+        dias_cobertura=dias_cobertura,
+        sucursal=sucursal,
+        brand_name=brand
+    )
+    
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    
+    filename = f"Compras_Historico_{start_date}_{end_date}.xlsx"
+    return StreamingResponse(
+        out,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
