@@ -17,6 +17,7 @@ configuración.
 - [Vista 3 — Salud del catálogo (`GET /catalog-health`)](#vista-3--salud-del-catálogo-get-catalog-health)
 - [Vista 4 — Plan del mes (`GET /plan`)](#vista-4--plan-del-mes-get-plan)
 - [Compras & Catálogo (`GET /analytics/compras-catalogo`)](#compras--catálogo-get-analyticscompras-catalogo)
+- [Reporte de Ventas (`GET /analytics/reporte-ventas`)](#reporte-de-ventas-get-analyticsreporte-ventas)
 - [Evolución en el tiempo (`GET /analytics/evolucion`)](#evolución-en-el-tiempo-get-analyticsevolucion)
 - [Admin — Metas del mes (`/analytics/goals`)](#admin--metas-del-mes-analyticsgoals)
 - [Admin — Category Targets (`/config/category-targets`)](#admin--category-targets-configcategory-targets)
@@ -856,6 +857,150 @@ El Excel incluye la advertencia de similares: columna **"⚠ Similar en tienda"*
 
 ---
 
+## Reporte de Ventas (`GET /analytics/reporte-ventas`)
+
+Informe de ventas del rango elegido, agregado **departamento → categoría →
+producto**, con costo, ganancia y margen. Pensado para el selector de fechas
+que ya usa el dashboard (`start_date` / `end_date` inclusivos, así que
+`start_date == end_date` da el reporte de un solo día).
+
+Dos endpoints sobre **el mismo cálculo**, para que la pantalla y el Excel nunca
+muestren números distintos.
+
+### `GET /analytics/reporte-ventas`
+
+**Query params:**
+
+| Param | Tipo | Default | Notas |
+|---|---|---|---|
+| `start_date` | `YYYY-MM-DD` | — | **requerido**, inclusive |
+| `end_date` | `YYYY-MM-DD` | — | **requerido**, inclusive |
+| `office_id` | int | `null` | Sucursal puntual. Sin esto, todas las de `offices_tienda` |
+| `incluir_productos` | bool | `true` | `false` corta en el nivel categoría — el payload pasa de ~223 KB a ~19 KB |
+
+Errores: `400` si el formato de fecha es inválido, si `start_date > end_date`,
+o si el rango supera **366 días**.
+
+**Shape de respuesta:**
+
+```jsonc
+{
+  "meta": {
+    "empresa": "tiendas kawii",
+    "desde": "2026-07-26", "hasta": "2026-08-24", "dias": 30,
+    "sucursal": "Todas las sucursales",   // o "KAWII MAGDALENA"
+    "office_ids": [1, 3],
+    "generado_en": "2026-08-24T13:30:02+00:00"
+  },
+  "totales": {
+    "unidades": 38072.0,
+    "ingresos": 196688.59,        // CON IGV — es la base del margen acá
+    "ingresos_netos": 166681.67,  // sin IGV, informativo
+    "igv": 30006.92,              // siempre ingresos - ingresos_netos
+    "costo": 129110.09,
+    "ganancia": 67578.50,         // ingresos - costo
+    "margen_pct": 34.36,          // ganancia / ingresos
+    "markup_pct": 52.34,          // ganancia / costo
+    "tickets": 11417,
+    "ticket_promedio": 17.23
+  },
+  "serie_diaria": [
+    { "fecha": "2026-07-26", "ingresos": 6890.20, "tickets": 401 }
+  ],
+  "departamentos": [
+    {
+      "departamento": "Hogar y Decoración",
+      "unidades": 9312.0, "ingresos": 40027.42, "ingresos_netos": 33922.12,
+      "igv": 6105.30, "costo": 26204.76, "ganancia": 13822.66,
+      "margen_pct": 34.53, "markup_pct": 52.75,
+      "participacion_pct": 20.35,          // sobre los ingresos totales
+      "tickets": 3184, "ticket_promedio": 12.57,
+      "categorias": [
+        {
+          "categoria": "Cocina",
+          "unidades": 4021.0, "ingresos": 17447.93, /* … */
+          "participacion_pct": 43.59,      // sobre los ingresos del DEPARTAMENTO
+          "productos": [                   // ausente si incluir_productos=false
+            {
+              "sku": "80158", "producto": "TERMO 1LT",
+              "unidades": 61.0, "ingresos": 895.17, "ingresos_netos": 758.51,
+              "igv": 136.66, "costo": 621.25, "ganancia": 273.92,
+              "margen_pct": 30.6, "markup_pct": 44.09,
+              "participacion_pct": 5.13    // sobre los ingresos de la CATEGORÍA
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Todos los niveles (producto, categoría, departamento, totales) traen el mismo
+set de métricas, así que un componente que renderice una fila sirve para los
+cuatro.
+
+Departamentos, categorías y productos vienen **ordenados por ingresos
+descendente**. Los decimales son números JSON, no strings.
+
+### `GET /analytics/reporte-ventas/excel`
+
+Mismos params (sin `incluir_productos`: el Excel siempre trae el detalle).
+Devuelve un `.xlsx` con:
+
+- **Portada** — cabecera del informe + los KPIs del periodo + la nota
+  metodológica.
+- **Resumen** — una fila por departamento, con gráfico de barras, torta de
+  participación y la línea de evolución diaria.
+- **Una pestaña por departamento** — tabla de categorías con sus productos en
+  filas **colapsables** (botones +/- de Excel), el bloque horizontal *Desglose
+  de los ingresos por categoría*, y 3 gráficos (barras / torta / línea).
+
+### Criterios de cálculo
+
+- Se excluyen **notas de crédito** y **líneas de regalo** (`is_gratuity`),
+  mismo criterio que `catalog-health` / `diagnosis`.
+- **Costo** = cantidad × costo efectivo de la variante **en la sucursal de la
+  venta** (`variant_costs_by_office`), con fallback al costo global
+  (`variant_costs`).
+- **Tickets**: se cuentan a nivel documento. Un ticket con productos de dos
+  departamentos cuenta en ambos, así que la columna `tickets` de los
+  departamentos **suma más** que `totales.tickets`. El total sale de contar
+  documentos únicos.
+
+#### ⚠️ La base del margen acá NO es la misma que en el resto del backend
+
+```
+ganancia   = ingresos CON IGV − costo neto
+margen_pct = ganancia / ingresos CON IGV
+```
+
+`/analytics/rentabilidad`, `/diagnosis` y `/catalog-health` usan el margen
+contable clásico **sobre venta neta**. Este reporte no. La diferencia es
+deliberada y se apoya en dos hechos de esta empresa, confirmados con el dueño
+el 2026-08-24:
+
+1. El **IGV cobrado en las ventas se queda en la empresa** (no se remite) → el
+   ingreso económico real es el bruto.
+2. Los **proveedores no facturan IGV** en las compras → el costo neto guardado
+   es exactamente lo que se paga.
+
+Con esas dos condiciones, bruto-contra-neto da ~**34%**; el margen contable
+daría ~**23%**. **Si alguna de las dos deja de ser cierta, este cálculo queda
+mal**: subir un solo lado por 1,18 es justo lo que produce un margen inflado
+(algebraicamente, "bruto vs costo neto" y "neto vs costo bruto" dan el mismo
+número, así que el error es invisible si no se revisan las dos puntas juntas).
+
+Por eso el endpoint expone `igv` en todos los niveles: permite auditar el
+puente `ingresos − igv = ingresos_netos` y rehacer el margen contable sin
+pedir otra query. `markup_pct` (ganancia sobre costo) va como segunda lente
+para fijar precios.
+
+**Al comparar contra otra vista del dashboard, verificá primero cuál base usa
+cada una** — si no, parece que los números no cuadran.
+
+---
+
 ## Evolución en el tiempo (`GET /analytics/evolucion`)
 
 Serie **mensual** de ventas por dimensión, pensada para **gráficos de líneas /
@@ -937,6 +1082,368 @@ para ordenar el foco por `aporte_al_crecimiento_pct` (quién mueve la aguja).
 > **Rendimiento**: la consulta escanea toda la ventana (hasta 24 meses reales para
 > poblar el YoY). Con el volumen actual responde en ~3–10 s según la dimensión;
 > conviene cachear en el frontend por `(dimension, meses, office_id)`.
+
+---
+
+## Ecosistema de compras (`GET /compras/ecosistema`)
+
+Cruza **compra ↔ venta ↔ stock** por nivel de taxonomía en una sola fila.
+Responde *"¿cuánto compré de cada categoría, cuánto vendí de eso, y qué me
+quedó?"* — el análisis que antes no existía. La compra sale de `receptions`
+filtrando "compra real" (sin traslados, sin ajustes de inventario, con las
+importaciones masivas, con sanidad de cantidad/costo).
+
+**Asimetría de sucursales (importante para leer los números):** la **compra** y
+el **stock** incluyen el almacén central (la mercadería entra y se acumula ahí);
+la **venta** solo las tiendas que venden al público. Con `office_id` las tres se
+acotan a esa sucursal. El `meta` devuelve ambos scopes usados.
+
+### Parámetros
+
+| Param | Tipo | Default | Comentario |
+|---|---|---|---|
+| `nivel` | enum | `categoria` | `departamento` \| `categoria` \| `subcategoria` |
+| `dias` | int 30–730 | `365` | Ventana de compra y venta hacia atrás |
+| `office_id` | int? | `null` | Filtra a una sucursal (vacío = scope de la empresa) |
+
+```http
+GET /compras/ecosistema?nivel=categoria&dias=365
+```
+
+### Shape de respuesta
+
+```jsonc
+{
+  "meta": {
+    "generado_at": "2026-08-17T19:12:04Z",
+    "nivel": "categoria",
+    "dias": 365,
+    "office_id": null,
+    "office_scope_compra": [1, 3, 4],   // tiendas + almacén
+    "office_scope_venta":  [1, 3],      // solo tiendas
+    "nota": "Compra y stock incluyen almacén central; venta solo tiendas. ..."
+  },
+  "kpis": {
+    "venta_total_pen":      2695275.64,
+    "compra_total_pen":     1948743.02,
+    "stock_total_pen":      156042.20,
+    "multiplicador_global": 1.38,       // venta / compra (flujo, NO margen)
+    "filas": 81,
+    "por_veredicto": {                  // conteo por estado → chips de resumen
+      "SOBRECOMPRA": 32, "EQUILIBRADO": 16, "RIESGO_QUIEBRE": 29,
+      "EXCESO_STOCK": 3, "SIN_MOVIMIENTO": 1
+    }
+  },
+  "items": [
+    {
+      "department": "Juguetes y Entretenimiento",
+      "category":   "Juguetes",          // + "subcategory" si nivel=subcategoria
+      "venta_pen":       258114.48,      // total_amount (retail, con IGV)
+      "compra_pen":      192652.00,      // quantity × cost (a costo)
+      "stock_pen":         7340.63,      // stock actual valorizado a costo
+      "unds_vendidas":   45233,
+      "unds_compradas":  57021,
+      "unds_stock":       2938,
+      "multiplicador":    1.34,          // venta_pen / compra_pen; null si compra=0
+      "sellthrough_pct":  79.3,          // unds_vendidas / unds_compradas; null si compra=0
+      "meses_cobertura":  0.8,           // unds_stock / (unds_vendidas por mes); null si venta=0
+      "veredicto":        "SOBRECOMPRA"
+    }
+    // ... ordenados por venta_pen desc
+  ]
+}
+```
+
+### Los tres números que el gerente lee
+
+| Métrica | Qué dice | Bandera |
+|---|---|---|
+| **multiplicador** | Soles de venta (retail) por cada sol comprado (a costo). Es un ratio de flujo, **no** el margen. | Bajo = se compró de más para lo que rota |
+| **sellthrough_pct** | Qué % de lo comprado ya salió | Bajo = capital atrapado |
+| **meses_cobertura** | Cuánto dura el stock al ritmo de venta | < 0.5 riesgo de quiebre · > 2.5 stock dormido |
+
+### Veredictos
+
+| Código | Cuándo | Lectura |
+|---|---|---|
+| `SIN_REPOSICION` | vendió y no se compró en la ventana | revisar si falta reponer |
+| `RIESGO_QUIEBRE` | cobertura < 0.5 meses | comprar ya |
+| `SOBRECOMPRA` | multiplicador < 1.5 | se compró de más |
+| `EXCESO_STOCK` | cobertura > 2.5 meses | capital dormido, promocionar |
+| `EQUILIBRADO` | ninguna bandera | ok |
+| `SIN_MOVIMIENTO` | ni compra ni venta | catálogo inactivo |
+
+> **Nota sobre el multiplicador**: como venta va con IGV y a precio de lista, y
+> compra a costo, el punto de equilibrio "vendí todo lo que compré" no es 1.0
+> sino ~1.8 (según margen). Los umbrales del veredicto (1.5 / 0.5 / 2.5) son un
+> punto de partida — conviene calibrarlos con el gerente una vez que los vea.
+
+---
+
+## Canasta — qué se llevan juntos los clientes (`GET /compras/canasta`)
+
+Análisis de **market-basket**: qué categorías (o subcategorías) se compran juntas
+en un mismo ticket. Sirve para decidir **exhibición cruzada, combos y reposición
+conjunta**. Responde el pedido *"conocer mejor qué compran las personas"*.
+
+La métrica que manda es el **lift**, no el conteo crudo: una categoría grande
+(ej. Higiene Personal) aparece en muchos tickets solo por tamaño; el lift divide
+por la frecuencia base de cada una y deja arriba los pares que de verdad se buscan
+juntos.
+
+### Selector de rango — `GET /compras/canasta/meses`
+
+Antes de mostrar la canasta, poblá el selector de meses con este endpoint ligero:
+
+```jsonc
+// GET /compras/canasta/meses?office_id=
+{
+  "office_id": null,
+  "office_scope": [1, 3],
+  "meses": [
+    { "mes": "2025-06", "tickets": 4055, "ventas_pen": 77243 },
+    // ... un objeto por mes con datos
+    { "mes": "2026-08", "tickets": 5450, "ventas_pen": 197112 }
+  ],
+  "primer_mes": "2025-06",
+  "ultimo_mes": "2026-08"
+}
+```
+
+### `GET /compras/canasta`
+
+| Param | Tipo | Default | Comentario |
+|---|---|---|---|
+| `nivel` | enum | `categoria` | `categoria` \| `subcategoria` |
+| `dias` | int 7–365 | `90` | Ventana si **no** se pasan fechas |
+| `fecha_desde` | date? | — | Inicio `YYYY-MM-DD` (junto con `fecha_hasta`) |
+| `fecha_hasta` | date? | — | Fin `YYYY-MM-DD`, **inclusivo** |
+| `office_id` | int? | `null` | Filtra a una sucursal |
+| `min_soporte` | int 1–1000 | `15` | Mínimo de tickets juntos para considerar un par |
+| `lift_min` | float 1–10 | `1.2` | Lift mínimo para reportar afinidad |
+| `top` | int 1–300 | `40` | Cuántos pares devolver |
+
+Pasá `fecha_desde` **y** `fecha_hasta` juntas (para un mes puntual del selector),
+o ninguna (usa `dias`). Pasar solo una → HTTP 400. `fecha_desde > fecha_hasta` → 400.
+
+```http
+GET /compras/canasta?nivel=categoria&fecha_desde=2026-05-01&fecha_hasta=2026-05-31
+```
+
+### Shape de respuesta
+
+```jsonc
+{
+  "meta": {
+    "generado_at": "2026-08-17T20:00:00Z",
+    "nivel": "categoria",
+    "desde": "2026-05-01", "hasta": "2026-05-31",   // inclusivos, para mostrar
+    "dias": 31,
+    "office_id": null,
+    "office_scope": [1, 3],
+    "parametros": { "min_soporte": 15, "lift_min": 1.2, "top": 40 },
+    "nota": "El lift es la métrica de afinidad: >1 = se compran juntas más de lo esperado..."
+  },
+
+  // ── Perfil de canasta: ¿cuántos productos lleva la gente? ──
+  "perfil_canasta": {
+    "tickets": 11951,
+    "tickets_multiproducto": 6405,
+    "pct_multiproducto": 53.6,               // ← ahí vive la venta cruzada
+    "productos_por_ticket": 2.33,
+    "ticket_promedio_pen": 16.20,
+    "ticket_promedio_multi_pen": 24.80,      // el ticket multi vale más
+    "distribucion": [
+      { "productos": "1",  "tickets": 5546 },
+      { "productos": "2",  "tickets": 3820 },
+      { "productos": "3",  "tickets": 1580 },
+      { "productos": "4+", "tickets": 1005 }
+    ]
+  },
+
+  // ── Pares ordenados por lift desc (los accionables) ──
+  "pares": [
+    {
+      "a": "Cumpleaños y Fiestas",
+      "b": "Piñatas",
+      "juntos": 158,               // tickets que llevaron ambas
+      "soporte_pct": 1.32,         // % de todos los tickets
+      "confianza_a_b": 18.6,       // de los que llevan A, % que lleva B
+      "confianza_b_a": 62.0,       // de los que llevan B, % que lleva A
+      "lift": 8.84,                // > 1 = afinidad real
+      "interpretacion": "afinidad_muy_fuerte"
+    }
+    // ...
+  ],
+
+  // ── Mejor acompañante por categoría (para "quien lleva X también lleva Y") ──
+  "por_categoria": [
+    {
+      "categoria": "Piñatas",
+      "acompanante": "Cumpleaños y Fiestas",
+      "lift": 8.84,
+      "confianza_pct": 62.0,       // % de tickets de "Piñatas" que llevan el acompañante
+      "tickets_juntos": 158
+    }
+    // ... una fila por categoría con al menos una afinidad
+  ],
+
+  "resumen": [
+    "6,405 de 11,951 tickets (54%) llevan más de un producto — ahí vive la venta cruzada.",
+    "La afinidad más fuerte es «Cumpleaños y Fiestas» + «Piñatas»: aparecen juntas 158 veces (lift 8.84)...",
+    "12 par(es) con afinidad fuerte (lift ≥ 1.5) — candidatos a exhibición cruzada o combo."
+  ]
+}
+```
+
+### Cómo renderizarlo
+
+1. **Selector de rango** arriba (meses de `/canasta/meses`, o un date-range). El
+   default sin fechas es los últimos 90 días.
+2. **Perfil de canasta** como tarjetas / dona: % multiproducto y distribución por
+   nº de productos. El % multiproducto es el titular ("dónde está la venta cruzada").
+3. **Tabla de pares** ordenada por lift, con chip de color por `interpretacion`
+   (muy_fuerte / fuerte / moderada). Mostrar `confianza_a_b` como "de quien lleva
+   A, el X% lleva B".
+4. **Por categoría** como buscador: elegís una categoría y ves su mejor acompañante.
+
+### Métricas (glosario rápido)
+
+| Métrica | Definición |
+|---|---|
+| **soporte** | % de tickets que llevan ambas categorías |
+| **confianza(A→B)** | de los que llevan A, qué % también lleva B |
+| **lift** | soporte / (frecuencia A × frecuencia B). >1 afinidad, ≈1 azar, <1 se evitan |
+
+> **Interpretación del lift**: `≥ 2.0` muy fuerte · `≥ 1.5` fuerte · `≥ 1.2`
+> moderada. Los pares con `lift < lift_min` no se devuelven.
+
+> **Cobertura y límites**:
+> - Solo cuenta ventas de las **tiendas** (excluye almacén central).
+> - Un ticket con más de 20 categorías distintas se excluye (mayoreo / consumo
+>   interno / artefacto, no una compra real de cliente).
+> - Con ~2.5 productos por ticket la señal es sólida a nivel **categoría**; a nivel
+>   **subcategoría** es más fina pero más dispersa — bajá `min_soporte` si hace falta.
+> - **Rendimiento**: la matriz de afinidad es pesada (~2–20 s según empresa y
+>   ventana). Es **cacheable** por `(nivel, desde, hasta, office_id)` hasta el
+>   próximo sync nocturno. Si una ventana muy grande excede el límite interno,
+>   responde **HTTP 503** pidiendo achicar el rango — mostrar ese mensaje y sugerir
+>   un mes puntual.
+
+---
+
+## Comparador temporal (`GET /compras/comparador`)
+
+Compara **dos ventanas de fecha arbitrarias** (cualquier mes/semana de cualquier
+año) cara a cara, a nivel **SKU agrupado por jerarquía**, y las cruza con el
+**stock actual**. Responde el pedido del gerente: *"en tal fecha se vendía bien
+X; ¿cómo viene ahora y qué me queda para reponer?"*.
+
+Reutiliza el patrón de `/analytics/compras-historico/excel` (venta de una ventana
+× stock actual × sugerencia) y lo extiende con la **segunda ventana** y la
+**rotación comparada**.
+
+- **Ventana A** = referencia (la fecha buena que querés replicar).
+- **Ventana B** = comparación. Si no la pasás, es el tramo reciente del **mismo
+  largo** que A, cerrando ayer.
+- **velocidad** = uds/día (la rotación). `delta_velocidad_pct` es la comparación
+  de rotación A→B.
+- **sugerencia_compra** cubre `dias_cobertura` días al ritmo de A, menos el stock
+  actual. El **veredicto** avisa si la demanda sigue (`REPONER`) o cayó
+  (`REVISAR_DEMANDA`), para no comprar a ciegas algo estacional.
+
+### Parámetros
+
+| Param | Tipo | Default | Comentario |
+|---|---|---|---|
+| `a_desde`, `a_hasta` | date | — | Ventana A `YYYY-MM-DD` (inclusivas). O usar `preset`. |
+| `b_desde`, `b_hasta` | date? | — | Ventana B. Si se omiten → tramo reciente del mismo largo. |
+| `preset` | enum? | — | `semana_anterior` \| `mes_anterior` \| `mismo_mes_ano_pasado` — llena A. |
+| `office_id` | int? | `null` | Filtra a una sucursal. |
+| `dias_cobertura` | int 1–180 | `30` | Días de stock a cubrir en la sugerencia. |
+| `top` | int 1–3000 | `300` | Máx SKUs en el JSON (el Excel trae **todos**). |
+| `orden` | enum | `sugerencia` | `sugerencia` \| `venta_a` \| `delta_venta`. |
+
+Pasá `preset` **o** (`a_desde` + `a_hasta`). `b_*` van las dos juntas o ninguna.
+Fechas inválidas o invertidas → HTTP 400.
+
+```http
+GET /compras/comparador?a_desde=2025-08-01&a_hasta=2025-08-31&orden=sugerencia
+GET /compras/comparador?preset=mismo_mes_ano_pasado
+```
+
+### Shape de respuesta
+
+```jsonc
+{
+  "meta": {
+    "generado_at": "2026-08-19T14:00:00Z",
+    "ventana_a": { "desde": "2025-08-01", "hasta": "2025-08-31", "dias": 31 },
+    "ventana_b": { "desde": "2026-07-19", "hasta": "2026-08-18", "dias": 31 },
+    "office_id": null,
+    "office_scope": [1, 3],
+    "dias_cobertura_objetivo": 30,
+    "alertas": [
+      "El stock de la ventana A no está disponible (el histórico de stock arranca el 2026-07-02)..."
+    ],
+    "nota": "Ventana A = referencia; Ventana B = comparación..."
+  },
+  "kpis": {
+    "skus": 1850,
+    "venta_a_pen": 135179, "venta_b_pen": 185387,
+    "delta_venta_pct": 37.1,
+    "sugerencia_unds_total": 25592,
+    "por_veredicto": { "REPONER": 15, "REVISAR_DEMANDA": 808, "EN_ALZA": 1002, "EXCESO_STOCK": 10, "OK": 15 }
+  },
+  "por_departamento": [ { "departamento": "...", "skus": 120, "venta_a_pen": ..., "venta_b_pen": ..., "delta_venta_pct": ..., "sugerencia_compra": ... } ],
+  "por_categoria":    [ { "departamento": "...", "categoria": "...", /* idem */ } ],
+  "skus": [
+    {
+      "departamento": "Cuidado Personal y Salud",
+      "categoria": "Higiene Personal", "subcategoria": "Toallitas Húmedas",
+      "sku": "60301", "producto": "TOALLITA HUMEDA X100 BYWIN",
+      "venta_a_pen": 3131, "venta_b_pen": 2332,
+      "unds_a": 930, "unds_b": 685,
+      "velocidad_a": 30.0, "velocidad_b": 22.1,     // rotación A vs B
+      "delta_venta_pct": -25.5, "delta_velocidad_pct": -26.3,
+      "stock_actual_unds": 1, "stock_actual_valor": 2.4,
+      "stock_ventana_a_unds": null,                 // solo si A cae en el histórico de stock
+      "cobertura_dias": 0.0,                        // stock / velocidad_b
+      "sugerencia_compra": 898,                     // cubrir 30d al ritmo de A − stock
+      "veredicto": "REPONER"                        // vendía bien y sigue, queda 1
+    }
+    // ... ordenados según `orden`
+  ],
+  "skus_total": 1850
+}
+```
+
+### `GET /compras/comparador/excel`
+
+Mismos parámetros (sin `top`/`orden`). Devuelve un `.xlsx` jerárquico
+dpto→cat→subcat→SKU con **todos** los SKUs, subtotales por nivel, y las columnas
+de comparación. Colores: 🟢 `REPONER`, 🟡 `REVISAR_DEMANDA`, 🔴 `EXCESO_STOCK`; la
+columna de sugerencia se resalta en verde cuando es > 0.
+
+### Veredictos
+
+| Código | Cuándo | Acción |
+|---|---|---|
+| `REPONER` | vendía bien en A, sigue vendiéndose y queda poco stock | comprar |
+| `REVISAR_DEMANDA` | vendía bien en A pero la rotación cayó | mirar antes de comprar (¿estacional? ¿discontinuado?) |
+| `EN_ALZA` | rota más ahora que en A | vigilar / oportunidad |
+| `EXCESO_STOCK` | mucho stock para lo que rota hoy | promocionar |
+| `OK` / `SIN_MOVIMIENTO` | sin acción | — |
+
+> **Límite de datos — stock histórico**: `stock_ventana_a_unds` (el stock que
+> había al cierre de A) solo existe si A cae **después del 2026-07-02** (inicio de
+> `stock_history`). Para fechas más viejas viene `null` y `meta.alertas` lo avisa;
+> la comparación sigue siendo válida: **demanda de A vs stock actual**, que es la
+> decisión de recompra real.
+
+> **Aperturas escalonadas**: comparar contra fechas donde una sucursal aún no
+> existía sesga los totales — si aplica, aparece en `meta.alertas`. Filtrá por
+> `office_id` para comparar la misma tienda.
 
 ---
 

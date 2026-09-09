@@ -35,10 +35,14 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from analytics.core.config import OFFICE_IDS
 from app.auth import CurrentCompany, get_current_company
 from app.calendar.holidays_pe import holidays_in_range, is_holiday
 from app.database import get_db
+from app.routers._office_scope import (
+    office_scope_ids,
+    request_office_scope,
+    set_request_office_scope,
+)
 from app.routers.config_admin import _read_cfg_names, get_company
 from harvester.config import TIPOS_VENTA as DEFAULT_TIPOS_VENTA
 
@@ -50,9 +54,6 @@ router = APIRouter(
 )
 
 
-_OFFICE_IDS_SQL  = ", ".join(str(i) for i in OFFICE_IDS)
-_OFFICE_PLAIN    = f"bsale_office_id IN ({_OFFICE_IDS_SQL})"
-_OFFICE_DOC      = f"doc.bsale_office_id IN ({_OFFICE_IDS_SQL})"
 _TZ_DATE         = "UTC"           # emission_date está a medianoche UTC
 _TZ_HOUR         = "America/Lima"  # generation_date sí tiene hora real
 
@@ -137,14 +138,23 @@ def _resolve_periods(days: int) -> dict[str, dict]:
 
 
 def _office_filters(office_id: Optional[int]) -> tuple[str, str, dict]:
-    """(filter_plain_sql, filter_doc_sql, extra_params)."""
+    """(filter_plain_sql, filter_doc_sql, extra_params).
+
+    Sin `office_id` usa el scope de la empresa (ContextVar seteado por el
+    endpoint). Los IDs son enteros validados → interpolación segura.
+    """
     if office_id is not None:
         return (
             "bsale_office_id = :office_id",
             "doc.bsale_office_id = :office_id",
             {"office_id": office_id},
         )
-    return (_OFFICE_PLAIN, _OFFICE_DOC, {})
+    ids_sql = ", ".join(str(int(i)) for i in request_office_scope())
+    return (
+        f"bsale_office_id IN ({ids_sql})",
+        f"doc.bsale_office_id IN ({ids_sql})",
+        {},
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -402,7 +412,7 @@ async def _decomp_by_office(
     cur_map  = {int(r["bsale_office_id"]): float(r["venta"]) for r in cur_rows}
     prev_map = {int(r["bsale_office_id"]): float(r["venta"]) for r in prev_rows}
 
-    scope = [office_id] if office_id is not None else list(OFFICE_IDS)
+    scope = [office_id] if office_id is not None else request_office_scope()
     off_rows = (await db.execute(
         text("SELECT bsale_office_id, name FROM offices WHERE company_id = :cid AND bsale_office_id = ANY(:ids)"),
         {"cid": company_id, "ids": scope},
@@ -1133,6 +1143,10 @@ async def diagnosis(
     cid = company.company_id
     company_cfg = await get_company(db, cid)
     tipos_venta = company_cfg.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+    # Scope de sucursales de ESTA empresa, visible a las sub-funciones vía el
+    # ContextVar. Sin office_id → tiendas de la empresa; con él, se respeta abajo.
+    office_scope = office_scope_ids(company_cfg)
+    set_request_office_scope(office_scope)
     excl = await _load_exclusions(db, cid)
 
     # ── KPIs por ventana (devuelve total + recurrente) ───────────────────
@@ -1282,7 +1296,7 @@ async def diagnosis(
         "base_4w":  {"from": base["from"].isoformat(), "to": (base["to"] - timedelta(days=1)).isoformat(), "dias": 28, "normalizado_a_dias": days},
         "yoy":      {"from": yoy["from"].isoformat(),  "to": (yoy["to"]  - timedelta(days=1)).isoformat(), "dias": days},
         "office_id": office_id,
-        "office_scope": [office_id] if office_id is not None else list(OFFICE_IDS),
+        "office_scope": [office_id] if office_id is not None else office_scope,
         "hoy_excluido": True,
         "datos_sync_hasta": last_sync.isoformat() if last_sync else None,
         "generado_at": datetime.utcnow().isoformat() + "Z",

@@ -28,9 +28,13 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from analytics.core.config import OFFICE_IDS
 from app.auth import CurrentCompany, get_current_company
 from app.database import get_db
+from app.routers._office_scope import (
+    office_scope_ids,
+    request_office_scope,
+    set_request_office_scope,
+)
 from app.routers.config_admin import get_goals, goal_for_month, get_company
 from app.routers.diagnosis import (
     _decomp_by_category,
@@ -80,7 +84,7 @@ async def _mes_en_curso(
     dto = corte + timedelta(days=1) if dias_transcurridos > 0 else first
 
     flt_plain, flt_doc, extra = _office_filters(office_id)
-    scope = [office_id] if office_id is not None else list(OFFICE_IDS)
+    scope = [office_id] if office_id is not None else request_office_scope()
 
     if dias_transcurridos > 0:
         params: dict[str, Any] = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": company_id, **extra}
@@ -586,6 +590,10 @@ async def pulse(
     cid = company.company_id
     company_cfg = await get_company(db, cid)
     tipos_venta = company_cfg.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+    # Scope de sucursales de la empresa, visible a los helpers de diagnosis que
+    # este endpoint reutiliza (leen el mismo ContextVar).
+    office_scope = office_scope_ids(company_cfg)
+    set_request_office_scope(office_scope)
     excl = await _load_exclusions(db, cid)
 
     mes       = await _mes_en_curso(db, cid, today, office_id, tipos_venta, excl)
@@ -619,7 +627,7 @@ async def pulse(
         "meta": {
             "fecha":              today.isoformat(),
             "office_id":          office_id,
-            "office_scope":       [office_id] if office_id is not None else list(OFFICE_IDS),
+            "office_scope":       [office_id] if office_id is not None else office_scope,
             "hoy_excluido":       True,
             "ultimo_dia_cerrado": ult_dia["fecha"] if ult_dia else None,
             "datos_sync_hasta":   last_sync.isoformat() if last_sync else None,

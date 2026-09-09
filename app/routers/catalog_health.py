@@ -36,9 +36,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from analytics.core.config import OFFICE_IDS
 from app.auth import CurrentCompany, get_current_company
 from app.database import get_db
+from app.routers._office_scope import office_scope_ids, set_request_office_scope
 from app.routers.config_admin import get_company
 from app.routers.diagnosis import (
     _excl_filter,
@@ -917,6 +917,9 @@ async def catalog_health(
     cid = company.company_id
     company_cfg = await get_company(db, cid)
     tipos_venta = company_cfg.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+    # Scope de sucursales de la empresa, visible a los helpers de diagnosis.
+    office_scope = office_scope_ids(company_cfg)
+    set_request_office_scope(office_scope)
     excl = await _load_exclusions(db, cid)
 
     categorias = await _categorias        (db, cid, today, office_id, tipos_venta, top_n, excl)
@@ -949,7 +952,7 @@ async def catalog_health(
         "meta": {
             "fecha":                today.isoformat(),
             "office_id":            office_id,
-            "office_scope":         [office_id] if office_id is not None else list(OFFICE_IDS),
+            "office_scope":         [office_id] if office_id is not None else office_scope,
             "datos_sync_hasta":     last_sync.isoformat() if last_sync else None,
             "generado_at":          datetime.utcnow().isoformat() + "Z",
             "exclusiones": {

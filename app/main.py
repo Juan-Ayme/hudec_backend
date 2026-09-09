@@ -34,6 +34,7 @@ from app.routers import (
     bsale_admin,
     catalog_health,
     category_targets,
+    compras,
     config_admin,
     costs_audit,
     diagnosis,
@@ -43,6 +44,7 @@ from app.routers import (
     products,
     pulse,
     purchases,
+    reporte_ventas,
     stock,
     sync,
     taxonomy,
@@ -117,6 +119,7 @@ app.include_router(products.router)
 app.include_router(stock.router)
 app.include_router(documents.router)
 app.include_router(analytics.router)
+app.include_router(reporte_ventas.router)   # /analytics/reporte-ventas — informe de ventas por departamento (JSON + Excel)
 app.include_router(diagnosis.router)        # /diagnosis — Vista 2 (¿por qué vendo menos hoy?)
 app.include_router(pulse.router)            # /pulse — Vista 1 (¿cómo voy hoy?)
 app.include_router(catalog_health.router)   # /catalog-health — Vista 3 (¿qué comprar/liquidar/reponer?)
@@ -128,6 +131,7 @@ app.include_router(audits.router)
 app.include_router(auth.router)             # /auth/* — login, logout, gestión de usuarios
 app.include_router(config_admin.router)     # /config/* — configuración runtime (exclusiones)
 app.include_router(purchases.router)        # /purchases/* — decisiones de compra del catálogo
+app.include_router(compras.router)          # /compras/* — ecosistema compra↔venta↔stock (Módulo A)
 app.include_router(matrix_router)  # /matrix/* — matrices de clasificación inteligente
 app.include_router(matrix_simulator.router)  # /matrix-sim/* — simulador por SKU
 

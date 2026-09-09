@@ -45,7 +45,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from analytics.core.config import OFFICE_IDS
+from app.routers._office_scope import office_scope_ids
 from app.auth import CurrentCompany, CurrentUser, get_current_company, get_current_user, require_operador_or_admin
 from app.database import get_db
 from app.events import log_event
@@ -74,7 +74,7 @@ CRECIMIENTO_META   = 1.05        # +5% sobre histórico al sugerir meta
 
 
 async def _detectar_motores(
-    db: AsyncSession, tipos_venta: list[int], excl: dict,
+    db: AsyncSession, tipos_venta: list[int], excl: dict, office_ids: list[int],
 ) -> list[dict]:
     """Devuelve la lista de categorías que califican como motor estable, junto
     con todas las métricas necesarias para sugerir meta/rol/PVP/etc.
@@ -84,7 +84,7 @@ async def _detectar_motores(
     excl_terms: list[str] = []
     params: dict[str, Any] = {
         "tipos_venta":   tipos_venta,
-        "office_ids":    list(OFFICE_IDS),
+        "office_ids":    office_ids,
         "days_min":      DAYS_MIN_CON_VENTA,
         "venta_min":     VENTA_MIN_PEN,
     }
@@ -299,7 +299,7 @@ async def preview_bootstrap(
     tipos_venta = company.get("tipos_venta") or DEFAULT_TIPOS_VENTA
     excl = await _load_exclusions(db)
 
-    rows = await _detectar_motores(db, tipos_venta, excl)
+    rows = await _detectar_motores(db, tipos_venta, excl, office_scope_ids(company))
     sugeridos = _asignar_rol_y_meta(rows)
     return {
         "total_sugerencias": len(sugeridos),
@@ -346,7 +346,7 @@ async def bootstrap(
     tipos_venta = company.get("tipos_venta") or DEFAULT_TIPOS_VENTA
     excl = await _load_exclusions(db)
 
-    rows = await _detectar_motores(db, tipos_venta, excl)
+    rows = await _detectar_motores(db, tipos_venta, excl, office_scope_ids(company))
     sugeridos = _asignar_rol_y_meta(rows)
 
     if force and existentes > 0:

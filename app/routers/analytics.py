@@ -26,10 +26,14 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
-from analytics.core.config import OFFICE_IDS
 from app.auth import CurrentCompany, get_current_company, get_current_user, require_operador_or_admin
 from app.config import get_settings
 from app.database import get_db
+from app.routers._office_scope import (
+    office_filter as _office_filter,
+    office_scope_ids,
+    resolve_office_scope,
+)
 from app.routers.config_admin import get_goals, goal_for_month, set_goals_month, get_company
 from harvester.config import TIPOS_VENTA as DEFAULT_TIPOS_VENTA
 
@@ -41,9 +45,9 @@ router = APIRouter(
     dependencies=[Depends(get_current_company)],
 )
 
-_OFFICE_IDS_SQL  = ", ".join(str(i) for i in OFFICE_IDS)
-_OFFICE_FILTER_DOC   = f"doc.bsale_office_id IN ({_OFFICE_IDS_SQL})"
-_OFFICE_FILTER_PLAIN = f"bsale_office_id IN ({_OFFICE_IDS_SQL})"
+# El scope de sucursales se resuelve POR EMPRESA en cada endpoint desde
+# `company_config` (ver app/routers/_office_scope.py). Ya no hay constante
+# global de oficinas: hardcodearla rompía el aislamiento multi-empresa.
 
 # TZ para extraer la fecha del timestamp. BSale guarda emissionDate a medianoche
 # UTC, así que la fecha real del documento se obtiene en UTC (NO en Lima, que
@@ -67,13 +71,8 @@ async def kpis(
     cid = company.company_id
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
-    if office_id is not None:
-        office_filter = "bsale_office_id = :office_id"
-        params = {"dfrom": dfrom, "dto": dto, "office_id": office_id,
-                  "tipos_venta": tipos_venta, "cid": cid}
-    else:
-        office_filter = _OFFICE_FILTER_PLAIN
-        params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
+    office_filter = _office_filter(office_scope_ids(company_config, office_id))
+    params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
 
     ventas_q = f"""
         SELECT COALESCE(SUM(total_amount), 0)
@@ -208,12 +207,8 @@ async def sales_by_day(
     cid = company.company_id
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
-    if office_id is not None:
-        office_filter = "bsale_office_id = :office_id"
-        params = {"dfrom": dfrom, "dto": dto, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
-    else:
-        office_filter = _OFFICE_FILTER_PLAIN
-        params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
+    office_filter = _office_filter(office_scope_ids(company_config, office_id))
+    params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
     query = f"""
         SELECT (emission_date AT TIME ZONE '{_TZ}')::DATE AS dia,
                ROUND(SUM(total_amount)::numeric, 2) AS ventas,
@@ -250,14 +245,10 @@ async def sales_by_day_detail(
     except ValueError:
         raise HTTPException(status_code=400, detail="Formato de fecha inválido. Usar YYYY-MM-DD")
 
-    if office_id is not None:
-        office_filter_doc = "doc.bsale_office_id = :office_id"
-        office_filter_plain = "bsale_office_id = :office_id"
-        params = {"tdate": parsed_date, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
-    else:
-        office_filter_doc = _OFFICE_FILTER_DOC
-        office_filter_plain = _OFFICE_FILTER_PLAIN
-        params = {"tdate": parsed_date, "tipos_venta": tipos_venta, "cid": cid}
+    scope = office_scope_ids(company_config, office_id)
+    office_filter_doc = _office_filter(scope, alias="doc")
+    office_filter_plain = _office_filter(scope)
+    params = {"tdate": parsed_date, "tipos_venta": tipos_venta, "cid": cid}
 
     summary_q = f"""
         SELECT ROUND(SUM(total_amount)::numeric, 2) AS ventas,
@@ -371,12 +362,8 @@ async def sales_by_department(
     cid = company.company_id
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
-    if office_id is not None:
-        office_filter = "doc.bsale_office_id = :office_id"
-        params = {"dfrom": dfrom, "dto": dto, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
-    else:
-        office_filter = _OFFICE_FILTER_DOC
-        params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
+    office_filter = _office_filter(office_scope_ids(company_config, office_id), alias="doc")
+    params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
     query = f"""
         SELECT vpf.department AS departamento,
                ROUND(SUM(dd.total_amount)::numeric, 2) AS ventas,
@@ -411,12 +398,8 @@ async def sales_by_category(
     cid = company.company_id
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
-    if office_id is not None:
-        office_filter = "doc.bsale_office_id = :office_id"
-        params = {"dfrom": dfrom, "dto": dto, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
-    else:
-        office_filter = _OFFICE_FILTER_DOC
-        params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
+    office_filter = _office_filter(office_scope_ids(company_config, office_id), alias="doc")
+    params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
     query = f"""
         SELECT vpf.department AS departamento, vpf.category AS categoria,
                ROUND(SUM(dd.total_amount)::numeric, 2) AS ventas,
@@ -548,6 +531,9 @@ async def _evolucion_serie(
     dfrom_ext_ts = datetime(dfrom_ext.year, dfrom_ext.month, dfrom_ext.day, tzinfo=timezone.utc)
     dto_ts = datetime(dto.year, dto.month, dto.day, tzinfo=timezone.utc)
 
+    # Scope de sucursales de la empresa (resuelto desde app_config.company).
+    scope_empresa = await resolve_office_scope(db, cid)
+
     # Fuente de la dimensión:
     #  - taxonomía (departamento/categoria/subcategoria): se precalcula un mapa
     #    producto->dim UNA vez sobre v_products_full (~miles de productos) y se une
@@ -558,7 +544,7 @@ async def _evolucion_serie(
         dim_join = ("JOIN offices o ON o.bsale_office_id = doc.bsale_office_id "
                     "AND o.company_id = doc.company_id")
         dim_select = "o.name"
-        office_filter = _OFFICE_FILTER_DOC  # muestra todas las activas; ignora office_id
+        office_filter = _office_filter(scope_empresa, alias="doc")  # todas las activas; ignora office_id
     else:
         vpf_col = {"departamento": "department", "categoria": "category",
                    "subcategoria": "subcategory"}[dimension]
@@ -571,15 +557,16 @@ async def _evolucion_serie(
         dim_join = ("JOIN variants v   ON v.bsale_variant_id = dd.bsale_variant_id AND v.company_id = dd.company_id\n"
                     "            JOIN prod_dim pd  ON pd.bsale_product_id = v.bsale_product_id")
         dim_select = "pd.dim"
-        office_filter = "doc.bsale_office_id = :office_id" if office_id is not None else _OFFICE_FILTER_DOC
+        office_filter = _office_filter(
+            [office_id] if office_id is not None else scope_empresa, alias="doc"
+        )
 
     params: dict[str, Any] = {
         "cid": cid, "dfrom_ext": dfrom_ext, "dto": dto,
         "dfrom_ext_ts": dfrom_ext_ts, "dto_ts": dto_ts,
         "periodo_from": periodo_from, "tipos_venta": tipos_venta, "top": top,
     }
-    if dimension != "sucursal" and office_id is not None:
-        params["office_id"] = office_id
+    # office_id ya va embebido en office_filter (IN (...)); no se pasa como param.
 
     query = f"""
         WITH {prod_dim_cte}agg AS MATERIALIZED (   -- ÚNICO scan de las tablas base (ventana extendida p/ YoY)
@@ -793,12 +780,8 @@ async def top_products(
     cid = company.company_id
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
-    if office_id is not None:
-        office_filter = "doc.bsale_office_id = :office_id"
-        params: dict[str, Any] = {"dfrom": dfrom, "dto": dto, "limit": limit, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
-    else:
-        office_filter = _OFFICE_FILTER_DOC
-        params = {"dfrom": dfrom, "dto": dto, "limit": limit, "tipos_venta": tipos_venta, "cid": cid}
+    office_filter = _office_filter(office_scope_ids(company_config, office_id), alias="doc")
+    params: dict[str, Any] = {"dfrom": dfrom, "dto": dto, "limit": limit, "tipos_venta": tipos_venta, "cid": cid}
     query = f"""
         SELECT p.bsale_product_id, p.name AS producto,
                ROUND(SUM(dd.total_amount)::numeric, 2) AS ventas,
@@ -966,16 +949,11 @@ async def ticket_anatomy(
     cid = company.company_id
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
-    if office_id is not None:
-        of_plain = "bsale_office_id = :office_id"
-        of_doc   = "doc.bsale_office_id = :office_id"
-        cur_params  = {"dfrom": cur_dfrom,  "dto": cur_dto,  "office_id": office_id, "cid": cid}
-        prev_params = {"dfrom": prev_dfrom, "dto": prev_dto, "office_id": office_id, "cid": cid}
-    else:
-        of_plain = _OFFICE_FILTER_PLAIN
-        of_doc   = _OFFICE_FILTER_DOC
-        cur_params  = {"dfrom": cur_dfrom,  "dto": cur_dto, "cid": cid}
-        prev_params = {"dfrom": prev_dfrom, "dto": prev_dto, "cid": cid}
+    scope = office_scope_ids(company_config, office_id)
+    of_plain = _office_filter(scope)
+    of_doc   = _office_filter(scope, alias="doc")
+    cur_params  = {"dfrom": cur_dfrom,  "dto": cur_dto, "cid": cid}
+    prev_params = {"dfrom": prev_dfrom, "dto": prev_dto, "cid": cid}
 
     cur  = await _period_metrics(db, cur_dfrom,  cur_dto,  of_plain, of_doc, cur_params, tipos_venta)
     prev = await _period_metrics(db, prev_dfrom, prev_dto, of_plain, of_doc, prev_params, tipos_venta)
@@ -1017,6 +995,7 @@ async def sales_by_office(
     cid = company.company_id
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
+    of_doc = _office_filter(office_scope_ids(company_config), alias="doc")
     query = f"""
         SELECT o.name AS sucursal,
                ROUND(SUM(dd.total_amount)::numeric, 2) AS ventas,
@@ -1028,7 +1007,7 @@ async def sales_by_office(
           AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE >= :dfrom
           AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE < :dto
           AND COALESCE(doc.is_credit_note, FALSE) = FALSE
-          AND {_OFFICE_FILTER_DOC}
+          AND {of_doc}
         GROUP BY o.name
         ORDER BY ventas DESC
     """
@@ -1070,15 +1049,14 @@ async def stockouts(
     d_window = today - timedelta(days=demand_window_days)
     d_lookback = today - timedelta(days=90)  # contexto de ventas y última venta
     cid = company.company_id
-    if office_id is not None:
-        office_filter = "sl.bsale_office_id = :office_id"
-        params: dict[str, Any] = {"office_id": office_id}
-    else:
-        office_filter = "sl." + _OFFICE_FILTER_PLAIN
-        params = {}
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
-    params.update({"dwin": d_window, "dlb": d_lookback, "limit": limit, "tipos_venta": tipos_venta, "cid": cid})
+    # Stock filtrado por la sucursal pedida (o todas las tiendas); la CTE de
+    # ventas siempre barre todas las tiendas — el join por (office, variant) la
+    # recorta después, así que el office_id no hace falta ahí.
+    office_filter = _office_filter(office_scope_ids(company_config, office_id), alias="sl")
+    of_doc_ventas = _office_filter(office_scope_ids(company_config), alias="doc")
+    params: dict[str, Any] = {"dwin": d_window, "dlb": d_lookback, "limit": limit, "tipos_venta": tipos_venta, "cid": cid}
 
     query = f"""
         WITH ventas AS (
@@ -1094,7 +1072,7 @@ async def stockouts(
             WHERE dd.company_id = :cid
               AND (doc.emission_date AT TIME ZONE '{_TZ}')::DATE >= :dlb
               AND COALESCE(doc.is_credit_note, FALSE) = FALSE
-              AND {_OFFICE_FILTER_DOC}
+              AND {of_doc_ventas}
             GROUP BY doc.bsale_office_id, dd.bsale_variant_id
         ),
         base AS (
@@ -1220,14 +1198,9 @@ async def sales_vs_goal(
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
 
-    if office_id is not None:
-        office_filter = "bsale_office_id = :office_id"
-        params: dict[str, Any] = {"dfrom": dfrom, "dto": dto, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
-        scope = [office_id]
-    else:
-        office_filter = _OFFICE_FILTER_PLAIN
-        params = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
-        scope = list(OFFICE_IDS)
+    scope = office_scope_ids(company_config, office_id)
+    office_filter = _office_filter(scope)
+    params: dict[str, Any] = {"dfrom": dfrom, "dto": dto, "tipos_venta": tipos_venta, "cid": cid}
 
     query = f"""
         SELECT bsale_office_id, COALESCE(SUM(total_amount), 0) AS venta
@@ -1521,12 +1494,8 @@ async def _margen_por_sku(
     company_config = await get_company(db, company_id)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
 
-    if office_id is not None:
-        office_filter = "doc.bsale_office_id = :office_id"
-        params: dict[str, Any] = {"skus": skus, "office_id": office_id, "days": days, "tipos_venta": tipos_venta, "cid": company_id}
-    else:
-        office_filter = _OFFICE_FILTER_DOC
-        params = {"skus": skus, "days": days, "tipos_venta": tipos_venta, "cid": company_id}
+    office_filter = _office_filter(office_scope_ids(company_config, office_id), alias="doc")
+    params: dict[str, Any] = {"skus": skus, "days": days, "tipos_venta": tipos_venta, "cid": company_id}
 
     query = f"""
         SELECT v.display_code AS sku,
@@ -1921,8 +1890,8 @@ async def compras_catalogo_excel(
 
     # 1c) Stock en las OTRAS sucursales → permite decidir TRASLADAR en vez de comprar.
     #     Una columna por cada tienda distinta a la filtrada. Es genérico: si mañana
-    #     hay más sucursales, aparecen solas (salen de OFFICE_IDS + tabla offices).
-    otras_ids = [o for o in OFFICE_IDS if o != office_id]
+    #     hay más sucursales, aparecen solas (salen del scope de la empresa + offices).
+    otras_ids = [o for o in await resolve_office_scope(db, cid) if o != office_id]
     stock_cols: list[str] = []
     if otras_ids and sku_codes:
         onames = {
@@ -2108,14 +2077,9 @@ async def daily_report_excel(
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
 
     # 1) Serie diaria desde el 1° del mes hasta hoy (días cerrados + hoy parcial).
-    if office_id is not None:
-        office_filter = "bsale_office_id = :office_id"
-        params: dict[str, Any] = {"dfrom": first, "dto": today + timedelta(days=1), "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
-        scope = [office_id]
-    else:
-        office_filter = _OFFICE_FILTER_PLAIN
-        params = {"dfrom": first, "dto": today + timedelta(days=1), "tipos_venta": tipos_venta, "cid": cid}
-        scope = list(OFFICE_IDS)
+    scope = office_scope_ids(company_config, office_id)
+    office_filter = _office_filter(scope)
+    params: dict[str, Any] = {"dfrom": first, "dto": today + timedelta(days=1), "tipos_venta": tipos_venta, "cid": cid}
 
     # Serie GLOBAL (alimenta las pestañas Ticket promedio + Transacciones).
     serie_q = f"""
@@ -2578,10 +2542,7 @@ async def margin_profitability_ranking(
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
 
-    if office_id is not None:
-        office_filter = "doc.bsale_office_id = :office_id"
-    else:
-        office_filter = _OFFICE_FILTER_DOC
+    office_filter = _office_filter(office_scope_ids(company_config, office_id), alias="doc")
 
     # CTE base: solo líneas con costo conocido y no gratuitas.
     base_cte = f"""
@@ -2753,10 +2714,7 @@ async def margin_comparative_matrix(
     company_config = await get_company(db, cid)
     tipos_venta = company_config.get("tipos_venta") or DEFAULT_TIPOS_VENTA
 
-    if office_id is not None:
-        office_filter = "doc.bsale_office_id = :office_id"
-    else:
-        office_filter = _OFFICE_FILTER_DOC
+    office_filter = _office_filter(office_scope_ids(company_config, office_id), alias="doc")
 
     # Map group_by to the GROUP BY and SELECT columns
     group_cols = {
@@ -2891,14 +2849,10 @@ async def compras_historico_excel(
     dias_rango = max(1, (dt_end - dt_start).days + 1)
     dias_cobertura = 10 # Según indicación
 
-    if office_id is not None:
-        office_filter_doc = "doc.bsale_office_id = :office_id"
-        office_filter_stock = "sl.bsale_office_id = :office_id"
-        params = {"start_date": dt_start, "end_date": dt_end, "office_id": office_id, "tipos_venta": tipos_venta, "cid": cid}
-    else:
-        office_filter_doc = _OFFICE_FILTER_DOC
-        office_filter_stock = "sl.bsale_office_id IN (" + _OFFICE_IDS_SQL + ")"
-        params = {"start_date": dt_start, "end_date": dt_end, "tipos_venta": tipos_venta, "cid": cid}
+    scope = office_scope_ids(company_config, office_id)
+    office_filter_doc = _office_filter(scope, alias="doc")
+    office_filter_stock = _office_filter(scope, alias="sl")
+    params = {"start_date": dt_start, "end_date": dt_end, "tipos_venta": tipos_venta, "cid": cid}
 
     query = f"""
         WITH stock_agrupado AS (

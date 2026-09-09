@@ -74,6 +74,7 @@ DEFAULT_THRESHOLDS: dict[str, float | int] = {
 
     # Recepciones (sanidad)
     "reception_qty_sanity_limit": 50000,
+    "reception_cost_sanity_limit": 10000,
 }
 
 
@@ -194,9 +195,10 @@ THRESHOLD_SECTIONS: list[dict] = [
     {
         "key": "recepciones",
         "title": "Recepciones (sanidad)",
-        "description": "Filtro anti-error de tipeo en cantidades de recepción.",
+        "description": "Filtro anti-error de tipeo en cantidades y costos de recepción.",
         "fields": [
             {"key": "reception_qty_sanity_limit", "label": "Cantidad máxima por línea", "help": "Cualquier línea > este valor se descarta (probable error de tipeo)."},
+            {"key": "reception_cost_sanity_limit", "label": "Costo unitario máximo", "help": "Cualquier línea con costo unitario > este valor se descarta (probable error de tipeo)."},
         ],
     },
 ]
