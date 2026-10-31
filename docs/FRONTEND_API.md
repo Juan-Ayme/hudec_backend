@@ -22,6 +22,8 @@ configuración.
 - [Admin — Metas del mes (`/analytics/goals`)](#admin--metas-del-mes-analyticsgoals)
 - [Admin — Category Targets (`/config/category-targets`)](#admin--category-targets-configcategory-targets)
 - [Admin — Variant Costs (`/config/variant-costs`)](#admin--variant-costs-configvariant-costs)
+- [Exportar Inventario Excel (`GET /stock/inventario/excel`)](#get-stockinventarioexcel-alias-get-stockexcel)
+- [Desactivación Masiva de Productos (`POST /products/bulk-deactivate`)](#post-productsbulk-deactivate)
 - [Flujo de onboarding para empresa nueva](#flujo-de-onboarding-para-empresa-nueva)
 - [Glosario](#glosario)
 
@@ -1708,6 +1710,155 @@ el frontend es:
 - **Errores**: el backend devuelve `{detail: "..."}` con código HTTP estándar (400,
   404, 409, 500).
 
+### `GET /stock/inventario/excel` (alias: `GET /stock/excel`)
+
+Descarga el **catálogo completo de productos con stock, precios y fechas históricas** en formato Excel (`.xlsx`), con la misma presentación visual y jerárquica de la **Matriz KAWII**.
+
+- **Portada corporativa**: Branding, fecha de corte, total de SKUs y tarjetas resumen (unidades físicas totales, capital en stock al costo y valor a PVP).
+- **Índice interactivo**: Tabla resumen por departamento con conteo de SKUs, stock total, valorizaciones y **enlaces clicables** a cada pestaña.
+- **Pestaña por Departamento**: Esquema colapsable con botones **`+` / `-` (outline de Excel)** a nivel de Categoría y Subcategoría, con subtotales automáticos de stock y valorización. Formatos numéricos para moneda (`S/ #,##0.00`), cantidades enteras (`#,##0`) y fechas (`YYYY-MM-DD`).
+
+#### Query Params
+
+| Parámetro | Tipo | Default | Descripción |
+| :--- | :--- | :--- | :--- |
+| `office_id` | `int \| null` | `null` | Si es `null`, devuelve el **reporte consolidado** con columnas de stock para cada sucursal activa (`Stock Magdalena`, `Stock Asamblea`, etc.) + totales. Si se especifica un ID, filtra por esa sucursal puntual. |
+| `department` | `string \| null` | `null` | Filtro opcional por nombre de departamento. |
+| `category` | `string \| null` | `null` | Filtro opcional por nombre de categoría. |
+| `subcategory` | `string \| null` | `null` | Filtro opcional por nombre de subcategoría. |
+| `only_with_stock` | `bool` | `false` | Si es `true`, solo descarga SKUs con stock disponible > 0. Si es `false`, incluye **el 100% del catálogo** (incluso stock en 0). |
+| `include_inactive` | `bool` | `false` | Si es `true`, incluye productos o variantes inactivas en BSale. |
+| `q` | `string \| null` | `null` | Búsqueda por nombre de producto, código SKU o código de barras. |
+
+#### Columnas generadas en el Excel
+
+1. **Jerarquía & Datos del Producto**: `Departamento`, `Categoría`, `Subcategoría`, `Código SKU`, `Código de Barras`, `Producto`, `Detalle / Variante`, `Unidad`, `Estado`.
+2. **Fechas Históricas**: `Fecha Creación / Ingreso`, `Última Recepción`, `Última Venta` (sin ventanas de 90 días, historial completo).
+3. **Stock**:
+   - En consolidado: `Stock [Nombre Sucursal 1]`, `Stock [Nombre Sucursal 2]`, ..., `Stock Disp Total`, `Stock Reserv Total`, `Stock Físico Total`.
+   - En sucursal puntual: `Stock Disp`, `Stock Reserv`, `Stock Físico`.
+4. **Valores Económicos**: `Costo Unitario S/`, `Precio Venta S/` (con impuestos), `Valor Stock Costo S/` ($Stock \times Costo$), `Valor Stock Venta S/` ($Stock \times PVP$).
+
+---
+
+### `POST /products/bulk-deactivate`
+
+Desactivación masiva de productos/variantes en **BSale** (`DELETE /v1/variants/{id}.json`) y en la base de datos interna de Postgres.
+
+> [!IMPORTANT]
+> **Requiere rol `admin`** y el header `X-Company-Id` (o cookie de sesión activa con membresía admin en la empresa).
+
+#### Características clave
+1. **Doble persistencia coordinada**: Desactiva primero en BSale vía API oficial (`DELETE /v1/variants/{id}.json`) para que el sync nocturno no vuelva a revivir el producto como activo, y luego actualiza inmediatamente la BD interna (`is_active = FALSE`).
+2. **Protección inteligente de stock**: Por defecto bloquea cualquier SKU que tenga stock disponible > 0 en alguna sucursal física. Se puede anular enviando `forzar_con_stock: true`.
+3. **Desactivación de producto padre en cascada**: Si todas las variantes de un producto quedan inactivas, el producto padre en `products` también se marca como inactivo automáticamente.
+4. **Modo simulación (`dry_run: true`)**: Permite que el frontend arme una ventana modal con el desglose exacto (SKUs listos, bloqueados por stock, ya inactivos y no encontrados) antes de que el usuario confirme la ejecución.
+5. **Auditoría e invalidación de caché**: Registra un evento en `event_log` (`products.bulk_deactivated`) e invalida el caché de las matrices de clasificación en memoria.
+
+#### Request Body (`application/json`)
+
+```json
+{
+  "skus": ["SKU-001", "SKU-002", "7751234567890"],
+  "dry_run": false,
+  "forzar_con_stock": false
+}
+```
+
+| Campo | Tipo | Requerido | Default | Descripción |
+| :--- | :--- | :--- | :--- | :--- |
+| `skus` | `string[]` | Sí | — | Lista de códigos SKU (`code`), códigos de barras (`bar_code`) o códigos de visualización (`display_code`). |
+| `dry_run` | `boolean` | No | `false` | Si es `true`, analiza el lote y devuelve el reporte sin modificar nada en BSale ni en la BD. |
+| `forzar_con_stock` | `boolean` | No | `false` | Si es `false`, omite variantes con stock > 0 colocándolas en `blocked_by_stock`. Si es `true`, desactiva todo el lote. |
+
+#### Response (`200 OK`)
+
+##### Ejemplo 1: Simulación (`dry_run: true`)
+```json
+{
+  "ok": true,
+  "dry_run": true,
+  "forzar_con_stock": false,
+  "timestamp": "2026-10-23T03:54:49.292662+00:00",
+  "totals": {
+    "received": 3,
+    "to_deactivate": 1,
+    "parent_products_to_deactivate": 1,
+    "blocked_by_stock": 1,
+    "already_inactive": 0,
+    "not_found": 1
+  },
+  "to_deactivate": [
+    {
+      "bsale_variant_id": 1212,
+      "bsale_product_id": 1163,
+      "code": "#160",
+      "bar_code": "6903072441556",
+      "display_code": "#160",
+      "product_name": "MOUSSE LIMPIADOR FACIAL P&W",
+      "stock": 0.0
+    }
+  ],
+  "blocked_by_stock": [
+    {
+      "bsale_variant_id": 1762,
+      "bsale_product_id": 1651,
+      "code": "00162(2)",
+      "bar_code": "6920240011808",
+      "display_code": "00162(2)",
+      "product_name": "MASCARA CHUCKY",
+      "stock": 2.0,
+      "reason": "Tiene 2 unidades de stock disponible. Usa forzar_con_stock=true para desactivar."
+    }
+  ],
+  "already_inactive": [],
+  "not_found": ["SKU_NO_EXISTE_123"]
+}
+```
+
+##### Ejemplo 2: Ejecución Real (`dry_run: false`)
+```json
+{
+  "ok": true,
+  "dry_run": false,
+  "forzar_con_stock": false,
+  "timestamp": "2026-10-23T03:55:10.123456+00:00",
+  "totals": {
+    "received": 3,
+    "deactivated": 1,
+    "failed": 0,
+    "parent_products_deactivated": 1,
+    "blocked_by_stock": 1,
+    "already_inactive": 0,
+    "not_found": 1
+  },
+  "deactivated": [
+    {
+      "bsale_variant_id": 1212,
+      "bsale_product_id": 1163,
+      "code": "#160",
+      "product_name": "MOUSSE LIMPIADOR FACIAL P&W",
+      "stock": 0.0
+    }
+  ],
+  "failed": [],
+  "blocked_by_stock": [
+    {
+      "bsale_variant_id": 1762,
+      "bsale_product_id": 1651,
+      "code": "00162(2)",
+      "product_name": "MASCARA CHUCKY",
+      "stock": 2.0,
+      "reason": "Tiene 2 unidades de stock disponible. Usa forzar_con_stock=true para desactivar."
+    }
+  ],
+  "already_inactive": [],
+  "not_found": ["SKU_NO_EXISTE_123"]
+}
+```
+
+---
+
 ### Versión del documento
 
-Generado: 2026-06-30. Si agregás endpoints nuevos, actualizá esta doc.
+Generado: 2026-06-30 (Actualizado: 2026-10-22 con `/stock/inventario/excel` y `/products/bulk-deactivate`). Si agregás endpoints nuevos, actualizá esta doc.

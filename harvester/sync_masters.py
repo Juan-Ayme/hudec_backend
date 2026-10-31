@@ -551,13 +551,28 @@ def sync_variants() -> dict:
     """
     Sincroniza productos y variantes desde /variants.json?expand=[product].
     Primero inserta products, luego variants (por FK).
+
+    Trae ACTIVAS e INACTIVAS (sin filtro `state`). El campo `is_active` se
+    toma del `state` real de BSale (0=activo, 1=inactivo). Motivo:
+      - BSale limita a ~5000 SKUs, así que se desactivan productos antiguos
+        con frecuencia. La BD local funciona como archivo histórico: conserva
+        todo producto que alguna vez existió (nombre, categoría) para poder
+        analizar sus ventas en el futuro.
+      - Si un SKU se desactiva en BSale, el próximo sync lo marca
+        is_active=FALSE (antes quedaba "activo fantasma" porque no llegaba).
+      - Si se reactiva, vuelve a is_active=TRUE.
+    Nunca se borra nada localmente. Los análisis operativos (matriz, compras,
+    costos, stock) ya filtran por is_active, así que no se ven afectados.
     """
     log_id = db.sync_start("variants")
     stats = {"fetched": 0, "inserted": 0, "skipped": 0}
 
     try:
-        items = paginate("/variants.json", "&state=0&expand=%5Bproduct%5D")
+        items = paginate("/variants.json", "&expand=%5Bproduct%5D")
         stats["fetched"] = len(items)
+        stats["inactive"] = sum(
+            1 for it in items if not _bsale_state_active(it.get("state"))
+        )
 
         cid = current_company_id()
         # Obtener product_types que ya existen en DB para ESTA empresa
