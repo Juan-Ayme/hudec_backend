@@ -168,6 +168,7 @@ reports/*.json
 
 # Reportes Excel generados por analytics/
 analytics/reportes_excel/
+graphify-out/
 
 # ---------------------------------------------------------------------------
 # Scratch / debug sueltos en la raíz (limpia commits accidentales)
