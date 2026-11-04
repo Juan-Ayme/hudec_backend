@@ -1,13 +1,15 @@
 """Endpoints de administracion de sincronizacion."""
 
+import asyncio
 import logging
+import os
 import subprocess
 import sys
 import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, APIRouter, BackgroundTasks, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +26,12 @@ class SyncRunRequest(BaseModel):
     days: int = Field(7, ge=1, le=3650)
     skip_documents: bool = False
     skip_stock_snapshot: bool = False
+    # Default 'quick' para que el botón "Sync con BSale" del dashboard sea
+    # rápido (~1-2 min) sin requerir cambios en el frontend. El cron nocturno
+    # invoca mt_sync por CLI (donde el default sigue siendo 'full').
+    mode: Literal["full", "quick"] = "quick"
+    full_refresh: bool = False
+    all_companies: bool = False
 
 
 class StopTaskResult(BaseModel):
@@ -43,30 +51,68 @@ logger = logging.getLogger(__name__)
 
 # Estado in-memory de tareas disparadas desde la API
 _task_state: dict[str, dict[str, Any]] = {}
+_task_lock = threading.Lock()
+_MAX_FINISHED_TASKS = 50
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # produccion/
 
 
+def _find_conflicting_task(target_cid: int | None) -> dict[str, Any] | None:
+    """Devuelve una tarea activa (QUEUED/RUNNING) que solape con `target_cid`.
+
+    target_cid=None significa 'todas las empresas', que solapa con cualquiera.
+    """
+    for t in _task_state.values():
+        if t.get("status") not in ("QUEUED", "RUNNING"):
+            continue
+        existing_cid = t.get("company_id")
+        if existing_cid is None or target_cid is None or existing_cid == target_cid:
+            return t
+    return None
+
+
+def _prune_finished_tasks() -> None:
+    """Mantiene acotado _task_state conservando activas + últimas N terminadas."""
+    finished = [
+        tid for tid, t in _task_state.items()
+        if t.get("status") in ("SUCCESS", "FAILED", "CANCELLED")
+    ]
+    if len(finished) > _MAX_FINISHED_TASKS:
+        for tid in finished[:-_MAX_FINISHED_TASKS]:
+            _task_state.pop(tid, None)
+
+
 def _run_mt_sync(task_id: str, days: int,
-                 skip_documents: bool, skip_stock_snapshot: bool) -> None:
+                 skip_documents: bool, skip_stock_snapshot: bool,
+                 company_id: int | None = None,
+                 mode: str = "full",
+                 full_refresh: bool = False) -> None:
     """Ejecuta mt_sync.py (orquestador multi-tenant) como subproceso.
 
     El handle del proceso queda en _task_state[task_id]["process"] para que
     POST /sync/{task_id}/stop pueda llamar process.terminate() desde otro
     request. El handle se remueve al final (no es JSON-serializable).
     """
-    _task_state[task_id]["status"] = "RUNNING"
-    _task_state[task_id]["started_at"] = datetime.utcnow().isoformat()
+    with _task_lock:
+        if _task_state.get(task_id, {}).get("status") == "CANCELLED":
+            return
+        _task_state[task_id]["status"] = "RUNNING"
+        _task_state[task_id]["started_at"] = datetime.utcnow().isoformat()
 
     cmd = [
         sys.executable, "-m", "tools.maintenance.mt_sync",
         "--days", str(days),
+        "--mode", mode,
     ]
+    if company_id is not None:
+        cmd.extend(["--company-id", str(company_id)])
     if skip_documents:
         cmd.append("--skip-documents")
     if skip_stock_snapshot:
         cmd.append("--skip-stock-snapshot")
+    if full_refresh:
+        cmd.append("--full-refresh")
 
     try:
         proc = subprocess.Popen(
@@ -99,14 +145,17 @@ def _run_mt_sync(task_id: str, days: int,
         elif timed_out:
             _task_state[task_id]["status"] = "FAILED"
             _task_state[task_id]["error"] = "Timeout: el sync excedió 90 min"
+        elif proc.returncode == 0:
+            _task_state[task_id]["status"] = "SUCCESS"
         else:
-            _task_state[task_id]["status"] = "SUCCESS" if proc.returncode == 0 else "FAILED"
+            _task_state[task_id]["status"] = "FAILED"
+            _task_state[task_id]["error"] = (
+                f"Sync terminó con errores en una o más fases (exit={proc.returncode})"
+            )
 
-        # Si el sync terminó OK, el contenido de la matriz cambió → tirar cache.
-        # El cron diario corre en otro servicio de Render (no este proceso) y
-        # ese caso NO lo cubrimos acá: a las 03:00 Lima nadie está en el
-        # dashboard, y el TTL ya expiró cuando llegan a la mañana.
-        if _task_state[task_id]["status"] == "SUCCESS":
+        # Tirar cache de matriz tanto en SUCCESS como en FAILED parcial
+        # (las fases completadas ya escribieron datos frescos en la DB).
+        if _task_state[task_id]["status"] in ("SUCCESS", "FAILED"):
             matrix_cache.invalidate()
     except Exception as exc:
         logger.exception("Error ejecutando mt_sync: %s", exc)
@@ -145,20 +194,42 @@ async def trigger_incremental(
         "warnings": [],
     }
 
-    try:
-        # Import diferido para no penalizar el arranque del API.
+    with _task_lock:
+        conflict = _find_conflicting_task(company.company_id)
+    if conflict:
+        raise HTTPException(
+            409,
+            f"Ya hay un sync en curso para esta empresa (task_id={conflict['task_id']}).",
+        )
+
+    master_key = os.environ.get("TOKEN_ENCRYPTION_KEY")
+    if not master_key:
+        raise HTTPException(500, "TOKEN_ENCRYPTION_KEY no configurada en el servidor")
+
+    tok_res = await db.execute(text("""
+        SELECT slug, pgp_sym_decrypt(bsale_token, :key)::text AS token
+        FROM companies
+        WHERE id = :cid AND is_active = TRUE AND bsale_token IS NOT NULL
+    """), {"cid": company.company_id, "key": master_key})
+    tk = tok_res.mappings().first()
+    if not tk or not tk["token"]:
+        raise HTTPException(400, f"La empresa {company.company_id} no tiene token BSale activo")
+
+    def _run_catalog_in_thread(cid: int, token: str, slug: str) -> dict[str, Any]:
         from harvester import db as h_db, sync_masters
+        from harvester.tenant_context import tenant_scope
 
-        # El harvester tiene su propio pool (separado del de la API).
-        # init_pool() es idempotente: si ya esta inicializado, no hace nada.
-        h_db.init_pool()
+        with tenant_scope(cid, token, slug):
+            h_db.init_pool()
+            return {
+                "product_types": sync_masters.sync_product_types(),
+                "variants": sync_masters.sync_variants(),
+            }
 
-        # 1) Taxonomy NO se toca: vive solo en BD interna.
-        # 2) product_types: trae cualquier categoria nueva creada en BSale.
-        report["stats"]["product_types"] = sync_masters.sync_product_types()
-
-        # 3) products + variants (sync_variants() crea ambos por FK).
-        report["stats"]["variants"] = sync_masters.sync_variants()
+    try:
+        report["stats"] = await asyncio.to_thread(
+            _run_catalog_in_thread, company.company_id, tk["token"], tk["slug"]
+        )
 
     except Exception as exc:
         logger.exception("Error en sync incremental: %s", exc)
@@ -227,36 +298,71 @@ async def trigger_update(
     Retorna un task_id para consultar estado via /sync/tasks/{task_id}.
     """
     params = payload or SyncRunRequest()
-    task_id = uuid.uuid4().hex[:10]
-    _task_state[task_id] = {
-        "task_id": task_id,
-        "status": "QUEUED",
-        "params": params.model_dump(),
-        "created_at": datetime.utcnow().isoformat(),
-    }
+    target_cid = None if params.all_companies else company.company_id
+
+    with _task_lock:
+        existing = _find_conflicting_task(target_cid)
+        if existing:
+            existing_mode = (existing.get("params") or {}).get("mode", "quick")
+            return {
+                "ok": True,
+                "already_running": True,
+                "message": f"Ya hay una sincronización en curso (task_id={existing['task_id']})",
+                "task_id": existing["task_id"],
+                "mode": existing_mode,
+            }
+        _prune_finished_tasks()
+        task_id = uuid.uuid4().hex[:10]
+        _task_state[task_id] = {
+            "task_id": task_id,
+            "company_id": target_cid,
+            "status": "QUEUED",
+            "params": params.model_dump(),
+            "created_at": datetime.utcnow().isoformat(),
+        }
     # No bloqueamos el request - corre en thread aparte
     thread = threading.Thread(
         target=_run_mt_sync,
         args=(task_id, params.days, params.skip_documents,
-              params.skip_stock_snapshot),
+              params.skip_stock_snapshot, target_cid,
+              params.mode, params.full_refresh),
         daemon=True,
     )
     thread.start()
     logger.info(
-        "Sync full encolada task_id=%s por user_id=%s en company=%s (%d dias)",
-        task_id, user.id, company.company_id, params.days,
+        "Sync (%s) encolada task_id=%s por user_id=%s en company=%s (%d dias)",
+        params.mode, task_id, user.id, company.company_id, params.days,
     )
     await log_event(
         db, company_id=company.company_id, event_type="sync.triggered",
         actor_user_id=user.id,
-        payload={"mode": "full", "task_id": task_id, **params.model_dump()},
+        payload={"task_id": task_id, **params.model_dump()},
         commit=True,
     )
     return {
         "ok": True,
-        "message": f"Sync encolada ({params.days} dias)",
+        "message": f"Sync {params.mode} encolada ({params.days} dias)",
         "task_id": task_id,
+        "mode": params.mode,
     }
+
+
+@router.post("/quick")
+async def trigger_quick(
+    days: int = Query(2, ge=1, le=30),
+    company: CurrentCompany = Depends(get_current_company),
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Atajo para sync operativa rápida (~1-2 min): stock actual, recepciones
+    y consumos nuevos, costos de variantes con recepción nueva y documentos
+    de los últimos `days` días (default: 2) solo para la empresa activa."""
+    req = SyncRunRequest(
+        days=days,
+        mode="quick",
+        skip_stock_snapshot=True,
+    )
+    return await trigger_update(payload=req, company=company, user=user, db=db)
 
 
 @router.get("/tasks")

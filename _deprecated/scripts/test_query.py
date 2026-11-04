@@ -1,13 +1,9 @@
 import asyncio
 import json
-from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
+from app.database import engine
 
 async def run_query():
-    engine = create_async_engine(
-        'postgresql+asyncpg://hudec_app:MD8N7foHgv3pm8SXzAHg8DFU497d2n6Xn6RxoC5F8apWH3oTu384DUErqF7phNfC@ep-winter-unit-ah31xvz6-pooler.c-3.us-east-1.aws.neon.tech:5432/hudec_bd', 
-        connect_args={'ssl': True}
-    )
     
     query = """
     WITH sales AS (

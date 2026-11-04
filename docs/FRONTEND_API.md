@@ -24,6 +24,7 @@ configuración.
 - [Admin — Variant Costs (`/config/variant-costs`)](#admin--variant-costs-configvariant-costs)
 - [Exportar Inventario Excel (`GET /stock/inventario/excel`)](#get-stockinventarioexcel-alias-get-stockexcel)
 - [Desactivación Masiva de Productos (`POST /products/bulk-deactivate`)](#post-productsbulk-deactivate)
+- [Reclasificación de Catálogo — Tipos de producto (BSale + BD)](#reclasificación-de-catálogo--tipos-de-producto-bsale--bd)
 - [Flujo de onboarding para empresa nueva](#flujo-de-onboarding-para-empresa-nueva)
 - [Glosario](#glosario)
 
@@ -1859,6 +1860,399 @@ Desactivación masiva de productos/variantes en **BSale** (`DELETE /v1/variants/
 
 ---
 
+## Reclasificación de Catálogo — Tipos de producto (BSale + BD)
+
+Módulo para **reorganizar tipos de producto y categorías desde el sistema**, manteniendo
+BSale y la BD interna sincronizados al instante. Pensado para una pantalla tipo
+*bandeja de trabajo*: el usuario ve qué tipos faltan mapear, los arrastra a una
+subcategoría, mueve productos entre tipos, fusiona tipos duplicados y borra los vacíos.
+
+> [!IMPORTANT]
+> - Todos los endpoints `/bsale/product-types/*` requieren rol **`admin`**.
+> - `/products/bulk-change-type` y `/products/bulk-subcategory` requieren **`operador` o `admin`**.
+> - Todos requieren el header `X-Company-Id`.
+> - Todos los endpoints que escriben aceptan **`dry_run: true`** → el frontend debe
+>   mostrar primero la simulación en un modal y luego confirmar con `dry_run: false`.
+
+### Conceptos
+
+| Término | Qué es |
+|---|---|
+| **product_type** | Tipo de producto en BSale (único nivel jerárquico que tiene BSale). |
+| **Mapeo** | Enlace `product_type → subcategoría` local (`product_types.subcategory_id`). Define en qué Departamento/Categoría/Subcategoría caen sus productos en todos los reportes. |
+| **Override** | Subcategoría asignada a **un producto puntual** (`products.subcategory_id`). Tiene prioridad sobre el mapeo de su tipo. |
+| **Convención de nombre** | `"Categoría / Subcategoría"`. Los tipos nuevos con ese nombre se auto-mapean al hacer pull. |
+
+> [!NOTE]
+> **No se pierde historia.** Las ventas, costos y stock se guardan por SKU. Al cambiar el
+> tipo de un producto (o el mapeo de un tipo), todo su historial pasa automáticamente
+> a la nueva categoría en los reportes y matrices.
+>
+> **El sync nunca pisa mapeos manuales.** Si un tipo ya tiene subcategoría asignada,
+> ni el sync nocturno ni el pull la cambian aunque el nombre en BSale sea distinto.
+
+### Flujo recomendado en el frontend
+
+```
+1. Botón "Jalar tipos desde BSale"   → POST /bsale/product-types/pull
+        ↓ (devuelve el workspace actualizado)
+2. Pantalla de bandejas              → GET  /bsale/product-types/workspace
+   ├─ "Sin mapear con productos"  → drag & drop a subcategoría → POST /bsale/product-types/bulk-map
+   ├─ "Sin mapear vacíos"         → botón "Eliminar todos"     → POST /bsale/product-types/bulk-delete
+   └─ "Mapeados"                  → seleccionar varios → "Fusionar en..." → POST /bsale/product-types/merge
+3. Tabla de productos (GET /products?product_type_id=X)
+   └─ checkboxes / pegar SKUs → "Mover a tipo..." → POST /products/bulk-change-type
+```
+
+---
+
+### `POST /bsale/product-types/pull`
+
+Jala en vivo todos los tipos desde BSale (~5–10 s) sin correr el sync completo.
+
+- Inserta tipos nuevos creados en BSale (aunque tengan 0 productos).
+- Actualiza nombres y estados. **No toca mapeos existentes.**
+- Auto-mapea solo tipos sin mapear cuyo nombre sea `"Categoría / Subcategoría"`
+  (o una subcategoría con nombre único en la empresa).
+- Marca `is_active = false` los tipos borrados/desactivados en BSale (`state` ≠ 0).
+
+**Body**: ninguno.
+
+**Response**
+```json
+{
+  "ok": true,
+  "operation": "pull_product_types",
+  "timestamp": "2026-11-02T03:03:40+00:00",
+  "stats": {
+    "fetched_from_bsale": 656,
+    "new_inserted": 0,
+    "updated": 1,
+    "auto_mapped": 0,
+    "deactivated_locally": 6,
+    "unmapped_with_products": 20,
+    "unmapped_empty": 29
+  },
+  "workspace": { "...": "igual que GET /bsale/product-types/workspace" }
+}
+```
+
+---
+
+### `GET /bsale/product-types/workspace`
+
+Todas las bandejas en una sola llamada (solo lectura, rápido).
+
+**Response**
+```json
+{
+  "summary": {
+    "total_product_types": 416,
+    "active_product_types": 369,
+    "inactive_product_types": 47,
+    "mapped_count": 367,
+    "unmapped_with_products_count": 20,
+    "unmapped_empty_count": 29,
+    "mapped_empty_count": 19,
+    "naming_mismatches_count": 22,
+    "products_with_override_count": 0,
+    "products_without_classification_count": 182
+  },
+  "unmapped_with_products": [ /* ProductTypeItem[], ordenado por productos activos desc */ ],
+  "unmapped_empty":         [ /* ProductTypeItem[] — candidatos a borrar */ ],
+  "mapped":                 [ /* ProductTypeItem[] */ ]
+}
+```
+
+**`ProductTypeItem`** (también lo devuelve `GET /bsale/product-types`)
+```json
+{
+  "bsale_product_type_id": 611,
+  "name": "Mochilas / Accesorios",
+  "is_active": true,
+  "is_mapped": true,
+  "subcategory_id": 723,
+  "subcategory": "Accesorios",
+  "category": "Mochilas", "category_id": 80,
+  "department": "Escolar", "department_id": 12,
+  "productos": 14,
+  "productos_activos": 11,
+  "productos_inactivos": 3,
+  "expected_name": "Mochilas / Accesorios",
+  "naming_ok": true,
+  "synced_at": "2026-11-02T03:03:40+00:00"
+}
+```
+
+Uso sugerido de badges: `summary.unmapped_with_products_count` (rojo),
+`summary.unmapped_empty_count` (gris, “limpiar”), `summary.naming_mismatches_count`
+(amarillo → botón existente `POST /audits/fix-naming`).
+
+#### `GET /bsale/product-types` (filtros nuevos)
+
+| Param | Tipo | Descripción |
+|---|---|---|
+| `q` | string | Búsqueda por nombre. |
+| `only_unmapped` | bool | Solo sin mapear. |
+| `only_inactive` | bool | Solo inactivos en BSale. |
+| `only_empty` | bool | **Nuevo.** Solo con 0 productos. |
+| `only_with_products` | bool | **Nuevo.** Solo con ≥ 1 producto. |
+| `limit` | int | 1–5000 (default 500). |
+
+---
+
+### `POST /bsale/product-types/bulk-map`
+
+Mapea (o desmapea) varios tipos a una subcategoría de golpe. Ideal para drag & drop.
+
+**Body**
+```json
+{
+  "product_type_ids": [611, 705, 707],
+  "subcategory_id": 723,
+  "unmap": false,
+  "rename_in_bsale": true,
+  "dry_run": false
+}
+```
+
+| Campo | Tipo | Default | Descripción |
+|---|---|---|---|
+| `product_type_ids` | int[] | — | Tipos a mapear. Requerido. |
+| `subcategory_id` | int \| null | `null` | Subcategoría destino. Requerido salvo `unmap=true`. |
+| `unmap` | bool | `false` | Quita el mapeo (los tipos vuelven a “sin mapear”). |
+| `rename_in_bsale` | bool | `false` | Además renombra en BSale a `"Categoría / Subcategoría"` (en paralelo). |
+| `dry_run` | bool | `false` | Simula. |
+
+**Response (real)**
+```json
+{
+  "ok": true,
+  "operation": "bulk_map_product_types",
+  "dry_run": false,
+  "target_subcategory": {
+    "subcategory_id": 723, "subcategory": "Accesorios",
+    "category_id": 80, "category": "Mochilas",
+    "department_id": 12, "department": "Escolar"
+  },
+  "totals": { "received": 3, "updated": 3, "renamed_in_bsale": 2, "rename_failed": 0, "not_found": 0 },
+  "updated_ids": [611, 705, 707],
+  "rename_failed": [],
+  "not_found": []
+}
+```
+
+> Si el renombre en BSale falla para algún tipo, **el mapeo local igual se aplica** y
+> el error se reporta en `rename_failed` (se puede reintentar con `POST /audits/fix-naming`).
+
+---
+
+### `POST /bsale/product-types/bulk-delete`
+
+Elimina tipos vacíos en BSale (`DELETE /v1/product_types/{id}.json`, en paralelo) y en la BD.
+
+**Body**
+```json
+{
+  "product_type_ids": [699, 705],
+  "delete_all_empty_unmapped": false,
+  "dry_run": true
+}
+```
+
+| Campo | Tipo | Default | Descripción |
+|---|---|---|---|
+| `product_type_ids` | int[] \| null | `null` | Tipos específicos a borrar. |
+| `delete_all_empty_unmapped` | bool | `false` | Selecciona automáticamente **todos** los tipos sin mapear con 0 productos. |
+| `dry_run` | bool | `false` | Simula. |
+
+> [!WARNING]
+> **Protección automática:** cualquier tipo que todavía tenga productos (activos **o**
+> inactivos) se bloquea y se devuelve en `blocked_with_products`. Para vaciarlo primero,
+> usar `POST /bsale/product-types/merge`.
+
+**Response (dry_run)**
+```json
+{
+  "ok": true,
+  "operation": "bulk_delete_product_types",
+  "dry_run": true,
+  "totals": { "requested": 29, "to_delete": 29, "blocked_with_products": 0, "not_found": 0 },
+  "to_delete": [ { "bsale_product_type_id": 699, "name": "Tipo viejo", "productos": 0, "...": "..." } ],
+  "blocked_with_products": [],
+  "not_found": []
+}
+```
+
+**Response (real)** → `totals: { requested, deleted, blocked_with_products, failed, not_found }`
+y listas `deleted[]`, `blocked_with_products[]` (con `reason`), `failed[]` (con `error`), `not_found[]`.
+
+---
+
+### `POST /bsale/product-types/merge`
+
+Fusiona uno o varios tipos origen dentro de un tipo destino.
+
+1. Mueve **todos** los productos (activos e inactivos) de los orígenes al destino en BSale
+   (`PUT /v1/products/{id}.json` con `productTypeId`, en paralelo) y en la BD.
+2. Si `delete_sources_after=true`, elimina en BSale + BD cada origen que quedó con 0 productos.
+   Si algún producto falló, ese origen **se conserva** y se reporta en `sources_kept`.
+
+**Body**
+```json
+{
+  "source_product_type_ids": [415, 416],
+  "target_product_type_id": 680,
+  "delete_sources_after": true,
+  "copy_mapping_if_target_unmapped": true,
+  "clear_product_overrides": true,
+  "dry_run": false
+}
+```
+
+| Campo | Tipo | Default | Descripción |
+|---|---|---|---|
+| `source_product_type_ids` | int[] | — | Tipos a vaciar. |
+| `target_product_type_id` | int | — | Tipo que recibe los productos. Debe estar **activo**. |
+| `delete_sources_after` | bool | `true` | Borra los orígenes vacíos en BSale + BD. |
+| `copy_mapping_if_target_unmapped` | bool | `true` | Si el destino no tiene subcategoría, hereda la del primer origen mapeado. |
+| `clear_product_overrides` | bool | `true` | Limpia overrides de los productos movidos. |
+| `dry_run` | bool | `false` | Simula (devuelve conteos + `sample_products` con los primeros 25). |
+
+**Response (real)**
+```json
+{
+  "ok": true,
+  "operation": "merge_product_types",
+  "dry_run": false,
+  "target": { "bsale_product_type_id": 680, "name": "Accesorios de Abrigo / Bufandas", "...": "..." },
+  "totals": {
+    "sources_requested": 2,
+    "products_found": 37,
+    "products_moved": 37,
+    "products_failed": 0,
+    "sources_deleted": 2,
+    "sources_kept": 0
+  },
+  "moved_products": [ { "bsale_product_id": 4370, "name": "...", "from_product_type_id": 415, "to_product_type_id": 680 } ],
+  "failed_products": [],
+  "sources_deleted": [ { "bsale_product_type_id": 415, "name": "..." } ],
+  "sources_kept": [],
+  "sources_not_found": []
+}
+```
+
+---
+
+### `POST /products/bulk-change-type`
+
+Cambia el tipo de muchos productos a la vez (BSale + BD). Acepta cualquier combinación
+de selectores — ideal para checkboxes en la tabla **o** pegar una columna de SKUs desde Excel.
+
+**Body**
+```json
+{
+  "target_product_type_id": 680,
+  "product_ids": [4370, 4371],
+  "variant_ids": [],
+  "skus": ["SKU-001", "7751234567890"],
+  "clear_overrides": true,
+  "dry_run": true
+}
+```
+
+| Campo | Tipo | Default | Descripción |
+|---|---|---|---|
+| `target_product_type_id` | int | — | Tipo destino. Debe existir localmente y estar activo (si se acaba de crear en BSale, hacer antes `POST /bsale/product-types/pull`). |
+| `product_ids` | int[] \| null | `null` | `bsale_product_id`. |
+| `variant_ids` | int[] \| null | `null` | `bsale_variant_id` → se mueve su producto padre. |
+| `skus` | string[] \| null | `null` | `code`, `bar_code` o `display_code` → se mueve su producto padre. |
+| `clear_overrides` | bool | `true` | Limpia `products.subcategory_id` para que hereden la categoría del nuevo tipo. |
+| `dry_run` | bool | `false` | Simula. |
+
+> [!NOTE]
+> El cambio de tipo es a nivel **producto** (familia): si mandás un SKU de una variante,
+> se mueve el producto completo con todas sus variantes. En BSale solo se envía
+> `{"id", "productTypeId"}` — nombre, stock, precios y estado no se tocan.
+> **La BD solo se actualiza para los productos que BSale confirmó.**
+
+**Response (dry_run)**
+```json
+{
+  "ok": true,
+  "operation": "bulk_change_product_type",
+  "dry_run": true,
+  "target_product_type": {
+    "bsale_product_type_id": 680, "name": "Accesorios de Abrigo / Bufandas",
+    "is_active": true, "is_mapped": true, "subcategory_id": 959,
+    "subcategory": "Bufandas", "category": "Accesorios de Abrigo", "department": "Moda"
+  },
+  "totals": { "matched_products": 1, "to_move": 1, "already_in_target": 0, "not_found_count": 0 },
+  "to_move": [
+    {
+      "bsale_product_id": 4370, "product_name": "PELUCHE PINGUINO", "is_active": true,
+      "bsale_product_type_id": 1, "override_subcategory_id": null,
+      "current_product_type_name": "Sin Tipo",
+      "current_department": null, "current_category": null, "current_subcategory": null
+    }
+  ],
+  "already_in_target": [],
+  "not_found": { "product_ids": [], "variant_ids": [], "skus": [] }
+}
+```
+
+**Response (real)** → `totals: { matched_products, moved, failed, already_in_target, overrides_cleared_on_existing, not_found_count }`
+y listas `moved[]` (con tipo viejo → nuevo), `failed[]` (con `error`), `already_in_target[]`, `not_found{}`.
+
+---
+
+### `POST /products/bulk-subcategory`
+
+Asigna o limpia **overrides** de subcategoría en lote (solo BD interna, no toca BSale).
+
+**Body**
+```json
+{
+  "subcategory_id": 723,
+  "product_ids": [4370],
+  "variant_ids": [],
+  "skus": ["SKU-001"],
+  "clear_all_company_overrides": false
+}
+```
+
+- `subcategory_id: null` + selectores → quita el override de esos productos.
+- `subcategory_id: null` + `clear_all_company_overrides: true` → limpia **todos** los overrides de la empresa.
+
+**Response**
+```json
+{
+  "ok": true,
+  "operation": "bulk_set_product_subcategory",
+  "subcategory_id": 723,
+  "updated_count": 2,
+  "updated_product_ids": [4370, 4371],
+  "not_found": { "product_ids": [], "variant_ids": [], "skus": [] }
+}
+```
+
+---
+
+### Rendimiento y errores (todos los endpoints de reclasificación)
+
+- Las llamadas a BSale corren **en paralelo y fuera del event loop**, respetando el
+  rate-limit (~9 req/s): ≈ 100 productos en ~12–15 s.
+- Errores parciales **no** abortan el lote: se devuelven en `failed[]` / `rename_failed[]`
+  / `sources_kept[]` con el mensaje de BSale, y la BD solo refleja lo confirmado.
+- Códigos: `400` (body inválido / destino inactivo), `404` (subcategoría o tipo no existe
+  en la empresa), `502` (BSale no respondió en `pull`).
+- Cada operación invalida el caché de matrices y registra un evento en `event_log`
+  (`bsale.product_types_pulled`, `bsale.product_types_bulk_mapped`,
+  `bsale.product_types_bulk_deleted`, `bsale.product_types_merged`,
+  `products.bulk_type_changed`, `products.bulk_subcategory_updated`).
+
+---
+
 ### Versión del documento
 
-Generado: 2026-06-30 (Actualizado: 2026-10-22 con `/stock/inventario/excel` y `/products/bulk-deactivate`). Si agregás endpoints nuevos, actualizá esta doc.
+Generado: 2026-06-30 (Actualizado: 2026-10-22 con `/stock/inventario/excel` y `/products/bulk-deactivate`; 2026-11-01 con el módulo de **Reclasificación de Catálogo**). Si agregás endpoints nuevos, actualizá esta doc.

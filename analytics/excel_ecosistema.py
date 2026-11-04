@@ -76,10 +76,18 @@ def build_ecosistema_workbook(
     ws_data = wb.create_sheet(title="Ecosistema")
     nivel = meta.get("nivel", "categoria")
     
-    # Definir columnas base
-    cols_def = [
-        ("Departamento", "department", 20, None),
-    ]
+    # Definir columnas base. Los niveles de atributo (marca, proveedor…) agrupan
+    # por una sola columna con el nombre del atributo.
+    atributos = {
+        "marca": "Marca", "proveedor": "Proveedor", "licencia": "Licencia", "origen": "Origen",
+        "publico": "Público", "temporada": "Temporada", "estilo": "Estilo", "material": "Material",
+    }
+    if nivel in atributos:
+        cols_def = [(atributos[nivel], nivel, 25, None)]
+    else:
+        cols_def = [
+            ("Departamento", "department", 20, None),
+        ]
     if nivel in ("categoria", "subcategoria"):
         cols_def.append(("Categoría", "category", 25, None))
     if nivel == "subcategoria":
@@ -115,6 +123,8 @@ def build_ecosistema_workbook(
             # Manejar nulos o Sin clasificar
             if val is None and key in ("department", "category", "subcategory"):
                 val = "Sin clasificar"
+            elif val is None and key in atributos:
+                val = "Sin dato"
                 
             cell = ws_data.cell(row=r_idx, column=c_idx, value=val)
             cell.border = BORDER_THIN

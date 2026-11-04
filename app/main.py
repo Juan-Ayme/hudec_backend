@@ -41,6 +41,7 @@ from app.routers import (
     documents,
     matrix_simulator,
     plan,
+    product_attributes,
     products,
     pulse,
     purchases,
@@ -116,6 +117,7 @@ app.include_router(taxonomy.router)
 app.include_router(taxonomy_admin.router)   # CRUD interno (departments/categories/subcategories)
 app.include_router(bsale_admin.router)      # CRUD que escribe a BSale (product_types)
 app.include_router(products.router)
+app.include_router(product_attributes.router)  # /attributes/* — marca, proveedor, licencia… + driver Excel
 app.include_router(stock.router)
 app.include_router(documents.router)
 app.include_router(analytics.router)

@@ -691,6 +691,55 @@ def _hoja_departamento(wb: Workbook, dep: dict, meta: dict, idx: int, used: set[
 # ──────────────────────────────────────────────────────────────────────────
 
 
+ATRIBUTO_COLS = ["Valor", "Unidades", "Ingresos", "Costo", "Ganancia", "Margen %", "% del total"]
+_ATR_INT_COLS = {1}
+_ATR_MONEY_COLS = {2, 3, 4}
+_ATR_PCT_COLS = {5, 6}
+_ATRIBUTO_TITULOS = {
+    "marca": "POR MARCA",
+    "proveedor": "POR PROVEEDOR",
+    "licencia": "POR LICENCIA / PERSONAJE",
+    "publico": "POR PÚBLICO",
+}
+
+
+def _hoja_por_atributo(wb: Workbook, data: dict) -> None:
+    """Ventas por marca, proveedor, licencia y público: un bloque por atributo,
+    uno debajo del otro. '(Sin dato)' es lo que falta cargar en el driver."""
+    por_atributo = data.get("por_atributo") or {}
+    if not any(por_atributo.values()):
+        return
+    meta = data["meta"]
+    ws = wb.create_sheet("Por atributo")
+    ws.sheet_properties.tabColor = C_ACCENT
+    _banner(ws, len(ATRIBUTO_COLS), "VENTAS POR ATRIBUTO",
+            f"{meta['empresa']} · {meta['sucursal']} · {meta['desde']} al {meta['hasta']}")
+
+    r = 4
+    all_rows: list[Sequence[Any]] = []
+    for code, titulo in _ATRIBUTO_TITULOS.items():
+        items = por_atributo.get(code) or []
+        if not items:
+            continue
+        ws.cell(row=r, column=1, value=titulo).font = LABEL_FONT
+        r += 1
+        _write_header_row(ws, r, ATRIBUTO_COLS)
+        r += 1
+        for i, it in enumerate(items):
+            vals = [it["valor"], _num(it["unidades"]), _num(it["ingresos"]), _num(it["costo"]),
+                    _num(it["ganancia"]), _num(it["margen_pct"]), _num(it["participacion_pct"])]
+            all_rows.append(vals)
+            for c_idx, val in enumerate(vals, 1):
+                cell = ws.cell(row=r, column=c_idx, value=val)
+                cell.border = BORDER_THIN
+                _fmt_cell(cell, c_idx - 1, _ATR_INT_COLS, _ATR_MONEY_COLS, _ATR_PCT_COLS)
+                if i % 2 == 1:
+                    cell.fill = FILL_ZEBRA
+            r += 1
+        r += 2
+    _autosize(ws, ATRIBUTO_COLS, all_rows)
+
+
 def build_reporte_ventas_workbook(data: dict) -> Workbook:
     """Arma el workbook completo a partir del dict del endpoint."""
     wb = Workbook()
@@ -698,6 +747,7 @@ def build_reporte_ventas_workbook(data: dict) -> Workbook:
 
     _hoja_portada(wb, data)
     _hoja_resumen(wb, data)
+    _hoja_por_atributo(wb, data)
 
     used: set[str] = set()
     for i, dep in enumerate(data["departamentos"], 1):

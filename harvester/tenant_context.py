@@ -18,7 +18,9 @@ que migrar a contextvars + ctx.run() en cada pool.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import threading
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,7 @@ class Tenant:
 
 
 _current: Tenant | None = None
+_scope_lock = threading.RLock()
 
 
 class NoTenantSetError(RuntimeError):
@@ -77,3 +80,18 @@ def current_token() -> str:
 
 def current_slug() -> str:
     return current_tenant().slug
+
+
+@contextmanager
+def tenant_scope(company_id: int, token: str, slug: str):
+    """Context manager thread-safe para operaciones BSale en proceso (FastAPI).
+
+    Serializa el uso del contexto global `_current` entre hilos de la API y
+    garantiza `clear_current_tenant()` al salir aunque ocurra una excepción.
+    """
+    with _scope_lock:
+        set_current_tenant(company_id, token, slug)
+        try:
+            yield _current
+        finally:
+            clear_current_tenant()

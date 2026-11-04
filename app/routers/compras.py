@@ -41,6 +41,7 @@ from app.routers._compras_filters import (
 )
 from app.routers._office_scope import office_filter
 from app.routers.config_admin import get_company
+from app.services.attribute_catalog import enriched_view_sql
 from harvester.config import TIPOS_VENTA as DEFAULT_TIPOS_VENTA
 
 router = APIRouter(
@@ -49,15 +50,29 @@ router = APIRouter(
     dependencies=[Depends(get_current_company)],
 )
 
-Nivel = Literal["departamento", "categoria", "subcategoria"]
+Nivel = Literal[
+    "departamento", "categoria", "subcategoria",
+    # Atributos (v_products_enriched): cruzan la taxonomía.
+    "marca", "proveedor", "licencia", "origen", "publico", "temporada", "estilo", "material",
+]
 
-# Columnas de agrupación por nivel. `key` son las columnas de v_products_full que
-# entran al GROUP BY / SELECT; `label` es cómo se llama la fila en la respuesta.
+# Columnas de agrupación por nivel. `key` son las columnas de v_products_full
+# (o v_products_enriched para los niveles de atributo) que entran al
+# GROUP BY / SELECT; `label` es cómo se llama la fila en la respuesta.
 _NIVEL_COLS: dict[str, list[str]] = {
     "departamento":  ["department"],
     "categoria":     ["department", "category"],
     "subcategoria":  ["department", "category", "subcategory"],
+    "marca":         ["marca"],
+    "proveedor":     ["proveedor"],
+    "licencia":      ["licencia"],
+    "origen":        ["origen"],
+    "publico":       ["publico"],
+    "temporada":     ["temporada"],
+    "estilo":        ["estilo"],
+    "material":      ["material"],
 }
+_NIVELES_TAXONOMIA = {"departamento", "categoria", "subcategoria"}
 
 
 def _f(v: Any) -> float:
@@ -98,6 +113,9 @@ async def _ecosistema_data(
     cf = await build_compras_filter(db, cid)                 # compra real
 
     cols = _NIVEL_COLS[nivel]
+    # Los niveles de atributo leen la vista enriquecida (con fallback en NULL si
+    # la migración de atributos todavía no se aplicó).
+    vista = "v_products_full" if nivel in _NIVELES_TAXONOMIA else await enriched_view_sql(db)
     sel_cols = ", ".join(f"vpf.{c}" for c in cols)
     sel_dims = ", ".join(cols)
     grp_cols = ", ".join(str(i + 1) for i in range(len(cols)))
@@ -127,7 +145,7 @@ async def _ecosistema_data(
                            AND r.bsale_reception_id = rd.bsale_reception_id
           JOIN variants v ON v.company_id = rd.company_id
                          AND v.bsale_variant_id = rd.bsale_variant_id
-          JOIN v_products_full vpf ON vpf.company_id = v.company_id
+          JOIN {vista} vpf ON vpf.company_id = v.company_id
                                   AND vpf.bsale_product_id = v.bsale_product_id
          WHERE rd.company_id = :cid
            AND r.admission_date >= CURRENT_DATE - make_interval(days => :dias)
@@ -144,7 +162,7 @@ async def _ecosistema_data(
                             AND doc.bsale_document_id = dd.bsale_document_id
           JOIN variants v ON v.company_id = dd.company_id
                          AND v.bsale_variant_id = dd.bsale_variant_id
-          JOIN v_products_full vpf ON vpf.company_id = v.company_id
+          JOIN {vista} vpf ON vpf.company_id = v.company_id
                                   AND vpf.bsale_product_id = v.bsale_product_id
          WHERE dd.company_id = :cid
            AND doc.emission_date >= CURRENT_DATE - make_interval(days => :dias)
@@ -160,7 +178,7 @@ async def _ecosistema_data(
           FROM stock_levels sl
           JOIN variants v ON v.company_id = sl.company_id
                          AND v.bsale_variant_id = sl.bsale_variant_id
-          JOIN v_products_full vpf ON vpf.company_id = v.company_id
+          JOIN {vista} vpf ON vpf.company_id = v.company_id
                                   AND vpf.bsale_product_id = v.bsale_product_id
           LEFT JOIN variant_costs vc ON vc.company_id = sl.company_id
                                     AND vc.bsale_variant_id = sl.bsale_variant_id

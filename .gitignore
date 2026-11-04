@@ -191,9 +191,16 @@ graphify-out/
 #   - Clasificacion_productos.md (documentación de la taxonomía)
 # Para multi-empresa: setear TAXONOMY_FILE=/etc/secrets/Estructura_inicial.json
 # en el .env de cada deploy y subir el JSON como Secret File en Render.
+#   - Taxonomía v2 (kawii-pluss-v1/v2.json + migracion_v1_v2.json): los tests
+#     verifican que v2 == aplicar las ops a v1. README_taxonomia_v2.md: pasos.
+#   Los Excel y reportes/ quedan fuera: tienen productos, costos y ventas.
 Nueva_estructura/*
 !Nueva_estructura/Estructura_inicial.json
 !Nueva_estructura/Clasificacion_productos.md
+!Nueva_estructura/kawii-pluss-v1.json
+!Nueva_estructura/kawii-pluss-v2.json
+!Nueva_estructura/migracion_v1_v2.json
+!Nueva_estructura/README_taxonomia_v2.md
 
 # Cuarentena local: archivos candidatos a borrar. Los revisás y los eliminás
 # a mano cuando estés seguro. No suben al repo.
