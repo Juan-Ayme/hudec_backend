@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import CurrentCompany, get_current_company, require_admin
 from app.database import get_db
+from app.kawii_matrix import cache as matrix_cache
 
 # Modifica la taxonomía local (departments / categories / subcategories).
 # Afecta cómo se agrupan TODOS los reportes — solo admin.
@@ -115,6 +116,7 @@ async def create_department(body: DepartmentIn, company: CurrentCompany = Depend
         {"cid": company.company_id, "name": body.name, "slug": slug}
     )
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
     new_id = res.scalar()
 
     entity_res = await db.execute(text("SELECT id, name, slug FROM departments WHERE id = :id"), {"id": new_id})
@@ -123,7 +125,7 @@ async def create_department(body: DepartmentIn, company: CurrentCompany = Depend
 
 
 @router.patch("/departments/{dep_id}")
-async def rename_department(dep_id: int, body: RenameIn, db: AsyncSession = Depends(get_db)) -> dict:
+async def rename_department(dep_id: int, body: RenameIn, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     exists_res = await db.execute(text("SELECT 1 FROM departments WHERE id = :id"), {"id": dep_id})
     if not exists_res.scalar():
         raise HTTPException(404, f"Departamento {dep_id} no existe")
@@ -134,6 +136,7 @@ async def rename_department(dep_id: int, body: RenameIn, db: AsyncSession = Depe
         {"name": body.name, "slug": slug, "id": dep_id}
     )
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
 
     entity_res = await db.execute(text("SELECT id, name, slug FROM departments WHERE id = :id"), {"id": dep_id})
     entity = dict(entity_res.mappings().first())
@@ -141,7 +144,7 @@ async def rename_department(dep_id: int, body: RenameIn, db: AsyncSession = Depe
 
 
 @router.delete("/departments/{dep_id}")
-async def delete_department(dep_id: int, force: bool = False, db: AsyncSession = Depends(get_db)) -> dict:
+async def delete_department(dep_id: int, force: bool = False, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     dept_res = await db.execute(text("SELECT id, name FROM departments WHERE id = :id"), {"id": dep_id})
     dept_row = dept_res.mappings().first()
     if not dept_row:
@@ -162,6 +165,7 @@ async def delete_department(dep_id: int, force: bool = False, db: AsyncSession =
 
     await db.execute(text("DELETE FROM departments WHERE id = :id"), {"id": dep_id})
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
 
     return await _report("delete_department", dept, warnings=warnings)
 
@@ -194,6 +198,7 @@ async def create_category(body: CategoryIn, company: CurrentCompany = Depends(ge
         {"cid": company.company_id, "did": body.department_id, "name": body.name, "slug": slug}
     )
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
     new_id = res.scalar()
 
     entity_res = await db.execute(text("""
@@ -206,7 +211,7 @@ async def create_category(body: CategoryIn, company: CurrentCompany = Depends(ge
 
 
 @router.patch("/categories/{cat_id}")
-async def rename_category(cat_id: int, body: RenameIn, db: AsyncSession = Depends(get_db)) -> dict:
+async def rename_category(cat_id: int, body: RenameIn, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     cat_res = await db.execute(text("""
         SELECT c.id, c.department_id, d.name AS department_name
         FROM categories c JOIN departments d ON d.id = c.department_id
@@ -223,6 +228,7 @@ async def rename_category(cat_id: int, body: RenameIn, db: AsyncSession = Depend
         {"name": body.name, "slug": slug, "id": cat_id}
     )
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
 
     entity_res = await db.execute(text("""
         SELECT c.id, c.name, c.slug, c.department_id, d.name AS department_name
@@ -234,7 +240,7 @@ async def rename_category(cat_id: int, body: RenameIn, db: AsyncSession = Depend
 
 
 @router.delete("/categories/{cat_id}")
-async def delete_category(cat_id: int, force: bool = False, db: AsyncSession = Depends(get_db)) -> dict:
+async def delete_category(cat_id: int, force: bool = False, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     cat_res = await db.execute(text("SELECT id, name FROM categories WHERE id = :id"), {"id": cat_id})
     cat_row = cat_res.mappings().first()
     if not cat_row:
@@ -255,6 +261,7 @@ async def delete_category(cat_id: int, force: bool = False, db: AsyncSession = D
 
     await db.execute(text("DELETE FROM categories WHERE id = :id"), {"id": cat_id})
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
 
     return await _report("delete_category", cat, warnings=warnings)
 
@@ -429,6 +436,7 @@ async def create_subcategory(body: SubcategoryIn, company: CurrentCompany = Depe
         {"comp_id": company.company_id, "cid": body.category_id, "name": body.name, "slug": slug}
     )
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
     new_id = res.scalar()
 
     entity_res = await db.execute(text("""
@@ -444,7 +452,7 @@ async def create_subcategory(body: SubcategoryIn, company: CurrentCompany = Depe
 
 
 @router.patch("/subcategories/{sub_id}")
-async def rename_subcategory(sub_id: int, body: RenameIn, db: AsyncSession = Depends(get_db)) -> dict:
+async def rename_subcategory(sub_id: int, body: RenameIn, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     sub_res = await db.execute(text("""
         SELECT s.id, c.name AS cat_name, d.name AS dept_name
         FROM subcategories s
@@ -463,6 +471,7 @@ async def rename_subcategory(sub_id: int, body: RenameIn, db: AsyncSession = Dep
         {"name": body.name, "slug": slug, "id": sub_id}
     )
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
 
     entity_res = await db.execute(text("""
         SELECT s.id, s.name, s.slug, s.category_id,
@@ -477,7 +486,7 @@ async def rename_subcategory(sub_id: int, body: RenameIn, db: AsyncSession = Dep
 
 
 @router.delete("/subcategories/{sub_id}")
-async def delete_subcategory(sub_id: int, force: bool = False, db: AsyncSession = Depends(get_db)) -> dict:
+async def delete_subcategory(sub_id: int, force: bool = False, company: CurrentCompany = Depends(get_current_company), db: AsyncSession = Depends(get_db)) -> dict:
     sub_res = await db.execute(text("""
         SELECT s.id, s.name, c.name AS cat_name, d.name AS dept_name
         FROM subcategories s
@@ -512,6 +521,7 @@ async def delete_subcategory(sub_id: int, force: bool = False, db: AsyncSession 
 
     await db.execute(text("DELETE FROM subcategories WHERE id = :id"), {"id": sub_id})
     await db.commit()
+    matrix_cache.invalidate(company_id=company.company_id)
 
     return await _report("delete_subcategory", sub, warnings=warnings)
 
@@ -633,6 +643,7 @@ async def bootstrap_taxonomy(
                 stats["subcategories_total"] += 1
 
     await db.commit()
+    matrix_cache.invalidate(company_id=cid)
     return await _report("bootstrap_taxonomy", entity=None, rows=stats["departments_inserted"]
                           + stats["categories_inserted"]
                           + stats["subcategories_inserted"],
@@ -695,6 +706,7 @@ async def wipe_taxonomy(
     )
     await db.execute(text("DELETE FROM departments WHERE company_id = :c"), {"c": cid})
     await db.commit()
+    matrix_cache.invalidate(company_id=cid)
 
     warnings: list[str] = []
     if counts_before["category_targets"] > 0:
@@ -722,6 +734,104 @@ async def wipe_taxonomy(
                 "products_desclassified": n_prod_override,
                 "product_types_unmapped": n_pt_mapped,
             }
+        },
+    )
+
+
+class MigrateBody(BaseModel):
+    """Operaciones de migración (ver app/services/taxonomy_migration.py).
+    El archivo Nueva_estructura/migracion_v1_v2.json trae `ops` listo para pegar."""
+    ops: list[dict]
+    dry_run: bool = True
+    targets_on_conflict: str = Field(
+        "abort",
+        description="Si dos categorías fusionadas tienen meta para la misma sucursal: "
+                    "'abort' (default) o 'keep_destination' (se descarta la meta del origen).",
+    )
+    skip_attribute_check: bool = Field(
+        False,
+        description="Permite migrar aunque no se hayan inferido atributos todavía. "
+                    "Sin atributos, fusionar tipos (ej. Perfumes Hombre/Mujer) pierde ese dato.",
+    )
+
+
+@router.post("/migrate")
+async def migrate_taxonomy(
+    body: MigrateBody,
+    company: CurrentCompany = Depends(get_current_company),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Renombra / mueve / fusiona / crea nodos de la taxonomía SIN perder ids,
+    productos ni metas. Con `dry_run=true` (default) ejecuta todo dentro de la
+    transacción, informa el resultado y hace rollback.
+
+    Verificaciones antes de confirmar (si fallan, rollback + 409):
+      - mismo número de productos, productos clasificados, tipos y tipos mapeados;
+      - mismo número de metas, salvo las descartadas con keep_destination.
+
+    No escribe en BSale. Al final devuelve `bsale_renombres_sugeridos` para
+    POST /bsale/product-types/bulk-map (rename_in_bsale=true).
+    """
+    from app.services.taxonomy_migration import MigrationError
+    from app.services.taxonomy_migration_db import (
+        DbMigrator,
+        bsale_type_renames,
+        check_invariants,
+        taxonomy_snapshot,
+    )
+
+    cid = company.company_id
+
+    if not body.dry_run and not body.skip_attribute_check:
+        has_table = await db.scalar(text("SELECT to_regclass('product_attrs') IS NOT NULL"))
+        n_attrs = 0
+        if has_table:
+            n_attrs = await db.scalar(
+                text("SELECT count(*) FROM product_attrs WHERE company_id = :c"), {"c": cid}
+            ) or 0
+        if not n_attrs:
+            raise HTTPException(
+                409,
+                "Todavía no hay atributos para esta empresa. Corré primero "
+                "`python -m tools.taxonomy.infer_attributes --company-id N --apply` "
+                "(la v2 junta tipos cuyo dato pasa a los atributos) o usá skip_attribute_check=true.",
+            )
+
+    before = await taxonomy_snapshot(db, cid)
+    migrator = DbMigrator(db, cid, body.targets_on_conflict)
+    try:
+        report = await migrator.apply(body.ops)
+    except MigrationError as e:
+        await db.rollback()
+        raise HTTPException(409, f"Migración abortada, no se cambió nada: {e}")
+    after = await taxonomy_snapshot(db, cid)
+    errors = check_invariants(before, after, len(migrator.targets_dropped))
+    renames = await bsale_type_renames(db, cid)
+
+    if errors:
+        await db.rollback()
+        raise HTTPException(409, {"message": "Migración abortada, no se cambió nada", "errors": errors})
+
+    if body.dry_run:
+        await db.rollback()
+    else:
+        await db.commit()
+        matrix_cache.invalidate(company_id=cid)
+
+    warnings = [f"#{r.index} {r.op} {' > '.join(r.path)}: {r.detail}"
+                for r in report.results if r.status == "refused"]
+    return await _report(
+        "migrate_taxonomy" + ("_DRY_RUN" if body.dry_run else ""),
+        entity=None,
+        rows=report.applied,
+        warnings=warnings,
+        extra={
+            "dry_run": body.dry_run,
+            "antes": before,
+            "despues": after,
+            "metas_descartadas": migrator.targets_dropped,
+            "operaciones": report.as_dict(),
+            "bsale_renombres_sugeridos": renames,
         },
     )
 

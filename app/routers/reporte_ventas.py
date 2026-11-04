@@ -67,6 +67,7 @@ from app.auth import CurrentCompany, get_current_company
 from app.database import get_db
 from app.routers._office_scope import office_filter as _office_filter, office_scope_ids
 from app.routers.config_admin import get_company
+from app.services.attribute_catalog import enriched_view_sql
 from harvester.config import TIPOS_VENTA as DEFAULT_TIPOS_VENTA
 
 router = APIRouter(
@@ -89,6 +90,9 @@ _TIMEOUT_MS = 60_000
 
 SIN_DEPARTAMENTO = "(Sin departamento)"
 SIN_CATEGORIA = "(Sin categoría)"
+SIN_DATO = "(Sin dato)"
+# Atributos que el reporte agrega aparte (además de dep → cat → producto).
+_ATRIBUTOS_REPORTE = ("marca", "proveedor", "licencia", "publico")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -163,9 +167,10 @@ _CTE_TAX = """
             COALESCE(NULLIF(v.display_code, ''), NULLIF(v.code, ''), '—') AS sku,
             COALESCE(vpf.product_name, v.description, 'Sin nombre') AS producto,
             COALESCE(vpf.department, :sin_dep)                      AS departamento,
-            COALESCE(vpf.category, :sin_cat)                        AS categoria
+            COALESCE(vpf.category, :sin_cat)                        AS categoria,
+            vpf.marca, vpf.proveedor, vpf.licencia, vpf.publico
         FROM variants v
-        LEFT JOIN v_products_full vpf
+        LEFT JOIN {vista} vpf
           ON vpf.bsale_product_id = v.bsale_product_id
          AND vpf.company_id = v.company_id
         WHERE v.company_id = :cid
@@ -198,6 +203,10 @@ _Q_DETALLE = """
         tax.categoria,
         tax.sku,
         tax.producto,
+        tax.marca,
+        tax.proveedor,
+        tax.licencia,
+        tax.publico,
         SUM(ventas.unidades)       AS unidades,
         SUM(ventas.ingresos)       AS ingresos,
         SUM(ventas.ingresos_netos) AS ingresos_netos,
@@ -211,7 +220,7 @@ _Q_DETALLE = """
       ON vco.bsale_variant_id = ventas.bsale_variant_id
      AND vco.company_id = :cid
      AND vco.bsale_office_id = ventas.bsale_office_id
-    GROUP BY 1, 2, 3, 4
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
 """
 
 # Tickets por departamento. Va aparte porque COUNT(DISTINCT documento) NO es
@@ -290,8 +299,11 @@ async def _build_data(
     }
     of = _office_filter(scope, alias="doc")
     cte_docs = _CTE_DOCS.format(office_filter=of)
-    sql_detalle = _Q_DETALLE.format(cte_docs=cte_docs, cte_tax=_CTE_TAX)
-    sql_tickets = _Q_TICKETS.format(cte_docs=cte_docs, cte_tax=_CTE_TAX)
+    # Atributos (marca, proveedor, licencia, público) desde v_products_enriched;
+    # si la migración de atributos no está aplicada, vienen en NULL.
+    cte_tax = _CTE_TAX.format(vista=await enriched_view_sql(db))
+    sql_detalle = _Q_DETALLE.format(cte_docs=cte_docs, cte_tax=cte_tax)
+    sql_tickets = _Q_TICKETS.format(cte_docs=cte_docs, cte_tax=cte_tax)
     sql_serie = _Q_SERIE.format(tz=_TZ, office_filter=of)
 
     # Fuerza hash joins. Mismo truco que las matrices y el informe diario: con
@@ -325,6 +337,7 @@ async def _build_data(
     # Se hace acá y no con GROUPING SETS para tener un solo recorrido de la
     # BD y armar la jerarquía anidada que consume tanto el JSON como el Excel.
     deps: dict[str, dict] = {}
+    por_atributo: dict[str, dict[str, dict]] = {code: {} for code in _ATRIBUTOS_REPORTE}
     for row in detalle:
         dep_name = row["departamento"]
         cat_name = row["categoria"]
@@ -345,9 +358,20 @@ async def _build_data(
         netos = _f(row["ingresos_netos"])
         costo = _f(row["costo"])
 
+        for code in _ATRIBUTOS_REPORTE:
+            key = row[code] or SIN_DATO
+            b = por_atributo[code].setdefault(key, {"valor": key, "unidades": 0.0, "ingresos": 0.0, "costo": 0.0})
+            b["unidades"] += _f(row["unidades"])
+            b["ingresos"] += _f(row["ingresos"])
+            b["costo"] += _f(row["costo"])
+
         cat["productos"].append({
             "sku": row["sku"],
             "producto": row["producto"],
+            "marca": row["marca"],
+            "proveedor": row["proveedor"],
+            "licencia": row["licencia"],
+            "publico": row["publico"],
             "unidades": unidades,
             "ingresos": round(ingresos, 2),
             "ingresos_netos": round(netos, 2),
@@ -446,6 +470,27 @@ async def _build_data(
             for r in serie_rows
         ],
         "departamentos": departamentos,
+        # Ventas por atributo (cruza departamentos). "Sin dato" = producto sin
+        # ese atributo cargado: es la cola de trabajo del driver.
+        "por_atributo": {
+            code: sorted(
+                (
+                    {
+                        "valor": b["valor"],
+                        "unidades": b["unidades"],
+                        "ingresos": round(b["ingresos"], 2),
+                        "costo": round(b["costo"], 2),
+                        "ganancia": round(b["ingresos"] - b["costo"], 2),
+                        "margen_pct": _pct(b["ingresos"] - b["costo"], b["ingresos"]),
+                        "participacion_pct": _pct(b["ingresos"], total_ingresos),
+                    }
+                    for b in buckets.values()
+                ),
+                key=lambda x: x["ingresos"],
+                reverse=True,
+            )
+            for code, buckets in por_atributo.items()
+        },
     }
 
 

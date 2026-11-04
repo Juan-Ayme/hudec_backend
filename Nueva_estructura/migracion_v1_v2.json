@@ -1,0 +1,1460 @@
+{
+  "version": "v1→v2 rev.2 (2026-11-02)",
+  "descripcion": "Operaciones para pasar la taxonomía de Kawii Pluss (kawii-pluss-v1.json) a la v2. Rev.2: lo asiático sigue en su departamento; perfumes, tapers y jarras no se fusionan (se ven en BSale); categoría = familia corta y subcategoría = producto concreto; más profundidad en lo que más vende. Se aplican en orden con POST /taxonomy/migrate (dry_run por defecto).",
+  "ops": [
+    {
+      "op": "rename",
+      "path": [
+        "Alimentos y Bebidas Asiáticas",
+        "Snacks y Dulces Asiáticos",
+        "Galletas Asiáticos"
+      ],
+      "to": "Galletas Asiáticas",
+      "why": "Nombre paralelo a 'Galletas' del departamento nacional"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Alimentos Nacionales",
+        "Galletas y Panadería",
+        "Galletas"
+      ],
+      "to": "Galletas Dulces",
+      "why": "Galletas es la subcategoría de alimentos que más vende: se separa dulce / salada / wafer"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Alimentos Nacionales",
+        "Galletas y Panadería",
+        "Galletas Saladas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Alimentos Nacionales",
+        "Galletas y Panadería",
+        "Wafers"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Alimentos Nacionales",
+        "Snacks",
+        "Conservas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor"
+      ],
+      "why": "Cocina tenía 27 tipos planos: se separa en familias"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Hogar y Decoración",
+        "Cocina"
+      ],
+      "to": [
+        "Cocina y Comedor"
+      ],
+      "why": "Se mueve (no se recrea) para conservar id y metas"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Cocina"
+      ],
+      "to": "Utensilios de Cocina"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Utensilios de Cocina"
+      ],
+      "to": "Utensilios Varios"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Mandiles"
+      ],
+      "to": "Mandiles y Manoplas"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Afilador de Cuchillos"
+      ],
+      "to": "Afiladores de Cuchillos",
+      "why": "Cuchillos y afiladores son productos distintos: quedan separados"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Tabla de Picar"
+      ],
+      "to": "Tablas de Picar"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Moledores y Prensas"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Repostería y Moldes"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Repostería"
+      ],
+      "why": "Evita 'Repostería y Moldes / Repostería y Moldes' en BSale"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Repostería",
+        "Repostería y Moldes"
+      ],
+      "to": "Moldes para Repostería"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Repostería",
+        "Utensilios de Repostería"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Ollas y Sartenes"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Menaje"
+      ],
+      "why": "Ollas, sartenes y teteras: una subcategoría cada una"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Menaje",
+        "Ollas y Sartenes"
+      ],
+      "to": "Ollas"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Menaje",
+        "Sartenes"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Teteras"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Menaje"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Tapers y Contenedores"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Almacenaje"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Tapers de Vidrio"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Almacenaje"
+      ],
+      "why": "Vidrio y plástico siguen separados: precios distintos y se ve en BSale"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Frascos y Tarros"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Almacenaje"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Aceiteros"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Almacenaje"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Condimenteros y Especieros"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Almacenaje"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Organizadores de Cocina"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Almacenaje"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Tomatodos y Botellas"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Botellas y Termos"
+      ],
+      "why": "Nombre corto; tomatodos es de lo que más vende en cocina y se separa por uso"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Botellas y Termos",
+        "Tomatodos Infantiles"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Botellas y Termos",
+        "Tomatodos Deportivos"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Termos"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Botellas y Termos"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Botellas y Termos",
+        "Vasos Térmicos"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Descartables de Cocina"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Descartables"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Palitos y Brochetas"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Descartables"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Fósforos y Encendedores"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Descartables"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Bowls, Fuentes y Bandejas"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Vajilla"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Cucharas"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Cubiertos"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Utensilios de Cocina",
+        "Tenedores"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Cubiertos"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Cubiertos",
+        "Sets de Cubiertos"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Hogar y Decoración",
+        "Comedor"
+      ],
+      "to": [
+        "Cocina y Comedor"
+      ],
+      "why": "Se mueve (no se recrea) para conservar id y metas"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Comedor"
+      ],
+      "to": "Mesa"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Platos Tendidos"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Vajilla"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Platos de Sopa"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Vajilla"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Vasos"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Vasos, Copas y Jarras"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Copas"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Vasos, Copas y Jarras"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Jarras de Plástico"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Vasos, Copas y Jarras"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Jarras de Vidrio"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Vasos, Copas y Jarras"
+      ],
+      "why": "Vidrio y plástico siguen separados"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Tazas y Mugs"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Tazas"
+      ],
+      "why": "Evita 'Tazas y Mugs / Tazas y Mugs' en BSale"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Tazas de Cerámica"
+      ],
+      "to": [
+        "Cocina y Comedor",
+        "Tazas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Mesa",
+        "Artículos de Bar"
+      ]
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Hogar y Decoración",
+        "Multiusos y Packs",
+        "Packs y Kits Variados"
+      ],
+      "into": [
+        "Hogar y Decoración",
+        "Organización",
+        "Organizadores Multiuso"
+      ]
+    },
+    {
+      "op": "drop_empty",
+      "path": [
+        "Hogar y Decoración",
+        "Multiusos y Packs"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Bebés e Infantil"
+      ],
+      "to": "Bebé e Infantil"
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Bebé e Infantil",
+        "Higiene y Cuidado del Bebé",
+        "Cuidado Infantil"
+      ],
+      "into": [
+        "Bebé e Infantil",
+        "Higiene y Cuidado del Bebé",
+        "Accesorios de Aseo del Bebé"
+      ],
+      "why": "Cuidado Infantil era un cajón de sastre; lo que no es aseo se reclasifica"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Bebé e Infantil",
+        "Accesorios del Bebé",
+        "Pisos y Alfombras de Goma"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Belleza",
+        "Perfumería",
+        "Colonias y Splashes"
+      ],
+      "to": "Colonias y Body Mist",
+      "why": "Perfumes Hombre / Mujer / Infantiles se mantienen: es como se busca en el POS"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Belleza",
+        "Perfumería",
+        "Body Spray"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Belleza",
+        "Perfumería",
+        "Sets de Perfumes"
+      ],
+      "to": "Sets de Regalo"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Belleza",
+        "Uñas"
+      ],
+      "to": "Manicure"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Belleza",
+        "Manicure",
+        "Herramientas de Manicure"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cuidado Personal y Salud",
+        "Cuidado del Cabello",
+        "Mascarillas Capilares"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cuidado Personal y Salud",
+        "Higiene Personal",
+        "Toallitas Húmedas Licencia"
+      ],
+      "to": "Toallitas Húmedas con Licencia",
+      "why": "Básicas y con licencia quedan separadas: es la 2ª subcategoría que más vende"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Electrohogar",
+        "Electrodomésticos del Hogar",
+        "Balanzas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Electrohogar",
+        "Electrodomésticos del Hogar",
+        "Accesorios de Electrodomésticos"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Ferretería y Jardín"
+      ],
+      "to": "Ferretería, Jardín y Automotriz"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Ferretería, Jardín y Automotriz",
+        "Herramientas",
+        "Escaleras"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Ferretería, Jardín y Automotriz",
+        "Jardín",
+        "Riego"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Limpieza",
+        "Cuidado del Auto"
+      ],
+      "to": [
+        "Ferretería, Jardín y Automotriz"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Ferretería, Jardín y Automotriz",
+        "Cuidado del Auto"
+      ],
+      "to": "Automotriz"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Ferretería, Jardín y Automotriz",
+        "Automotriz",
+        "Accesorios de Auto"
+      ]
+    },
+    {
+      "op": "drop_empty",
+      "path": [
+        "Limpieza",
+        "Siliconas y Protectores"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Fiestas y Cumpleaños"
+      ],
+      "to": "Fiestas y Regalos"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Fiestas y Regalos",
+        "Piñatas",
+        "Piñatas"
+      ],
+      "to": "Piñatas Infantiles",
+      "why": "Evita 'Piñatas / Piñatas' en BSale"
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juguetes",
+        "Figuras de Animales y Dinosaurios"
+      ],
+      "into": [
+        "Juguetes y Entretenimiento",
+        "Figuras y Personajes",
+        "Dinosaurios"
+      ],
+      "why": "La categoría Juguetes duplicaba el resto del departamento"
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juguetes",
+        "Juegos de Habilidad"
+      ],
+      "into": [
+        "Juguetes y Entretenimiento",
+        "Juegos de Mesa y Habilidad",
+        "Destreza"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juguetes",
+        "Juguetes Didácticos"
+      ],
+      "to": [
+        "Juguetes y Entretenimiento",
+        "Didácticos y Creativos"
+      ]
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juguetes",
+        "Juguetes Musicales"
+      ],
+      "into": [
+        "Juguetes y Entretenimiento",
+        "Musicales",
+        "Instrumentos"
+      ]
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juguetes",
+        "Pistolas de Juguete"
+      ],
+      "into": [
+        "Juguetes y Entretenimiento",
+        "Armas de Juguete",
+        "Pistolas y Metralletas"
+      ]
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juguetes",
+        "Slime y Masas"
+      ],
+      "into": [
+        "Juguetes y Entretenimiento",
+        "Sensoriales y Antiestrés",
+        "Slime, Squishy y Arena"
+      ]
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juguetes",
+        "Vehículos y Carros"
+      ],
+      "into": [
+        "Juguetes y Entretenimiento",
+        "Vehículos",
+        "Carros y Autos"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juguetes"
+      ],
+      "to": "Otros Juguetes",
+      "why": "Queda solo 'Juguetes Variados'; se renombra (no se borra) para conservar id y metas"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Tendencias Kawaii",
+        "Peluches"
+      ],
+      "to": [
+        "Juguetes y Entretenimiento"
+      ],
+      "why": "Kawaii pasa al atributo Estilo y el personaje al atributo Licencia; el nombre 'Peluches Kawaii' se mantiene"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Tendencias Kawaii",
+        "Llaveros"
+      ],
+      "to": [
+        "Moda y Accesorios"
+      ]
+    },
+    {
+      "op": "drop_empty",
+      "path": [
+        "Tendencias Kawaii"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Muñecas",
+        "Muñecas"
+      ],
+      "to": "Muñecas y Princesas",
+      "why": "Evita 'Muñecas / Muñecas' en BSale"
+    },
+    {
+      "op": "merge",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Burbujas y Agua",
+        "Burbujeros"
+      ],
+      "into": [
+        "Juguetes y Entretenimiento",
+        "Juegos al Aire Libre",
+        "Burbujas"
+      ]
+    },
+    {
+      "op": "drop_empty",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Burbujas y Agua"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Juegos al Aire Libre",
+        "Hidrogel y Pistolas de Agua"
+      ],
+      "to": "Pistolas de Agua",
+      "why": "El hidrogel va solo en Armas de Juguete"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Deportes y Fitness",
+        "Fitness y Yoga"
+      ],
+      "to": [
+        "Juguetes y Entretenimiento"
+      ],
+      "why": "El departamento Deportes y Fitness no vendió en 12 meses"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Fitness y Yoga"
+      ],
+      "to": "Deportes y Fitness"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Deportes y Aire Libre",
+        "Deportes y Movilidad"
+      ],
+      "to": [
+        "Juguetes y Entretenimiento",
+        "Deportes y Fitness"
+      ]
+    },
+    {
+      "op": "drop_empty",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Deportes y Aire Libre"
+      ]
+    },
+    {
+      "op": "drop_empty",
+      "path": [
+        "Deportes y Fitness"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Figuras y Personajes",
+        "Robots y transformables"
+      ],
+      "to": "Robots y Transformables",
+      "why": "En BSale el tipo se llama con T mayúscula y no se resolvía"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Juguetes y Entretenimiento",
+        "Didácticos y Creativos",
+        "Arte y Manualidades"
+      ],
+      "to": "Kits Creativos",
+      "why": "Arte y Manualidades queda solo en Librería"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Librería y Oficina",
+        "Papelería",
+        "Cuadernos y Blocks"
+      ],
+      "to": "Cuadernos",
+      "why": "Subcategoría que más vende de toda la tienda: se separa"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Papelería",
+        "Blocks y Sketchbooks"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Librería y Oficina",
+        "Papelería",
+        "Papeles y Cartulinas"
+      ],
+      "to": "Papel Bond y Especiales"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Papelería",
+        "Cartulinas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Papelería",
+        "Papel Lustre, Crepé y Seda"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Papelería",
+        "Papelotes"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Colores y Crayolas"
+      ],
+      "to": "Colores"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Crayolas y Óleos"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Plumones y Marcadores"
+      ],
+      "to": "Plumones Escolares"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Plumones de Pizarra"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Resaltadores"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Lápices y Lapiceros"
+      ],
+      "to": "Lápices"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Lapiceros"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Oficina",
+        "Calculadoras"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Mascotas",
+        "Accesorios y Juguetes",
+        "Juguetes y Accesorios para Mascotas"
+      ],
+      "to": "Juguetes para Mascotas"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Mascotas",
+        "Accesorios y Juguetes",
+        "Correas, Collares y Pecheras"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Mascotas",
+        "Accesorios y Juguetes",
+        "Camas, Jaulas y Transportadores"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Moda y Accesorios",
+        "Accesorios de Abrigo"
+      ],
+      "to": "Accesorios de Invierno",
+      "why": "Adulto vs infantil pasa al atributo Público"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Moda y Accesorios",
+        "Accesorios de Invierno",
+        "Guantes de Adultos"
+      ],
+      "to": "Guantes"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Moda y Accesorios",
+        "Accesorios de Invierno",
+        "Bufandas"
+      ],
+      "to": "Bufandas y Chalinas"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Moda y Accesorios",
+        "Ropa Infantil",
+        "Guantes, Chullos y Chalinas"
+      ],
+      "to": [
+        "Moda y Accesorios",
+        "Accesorios de Invierno"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Moda y Accesorios",
+        "Accesorios de Invierno",
+        "Guantes, Chullos y Chalinas"
+      ],
+      "to": "Chullos y Gorros"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Moda y Accesorios",
+        "Accesorios de Invierno",
+        "Mantas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Moda y Accesorios",
+        "Otros Accesorios",
+        "Cinturones y Correas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Moda y Accesorios",
+        "Carteras y Bolsos",
+        "Mochilas de Moda"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Calzado",
+        "Accesorios de Calzado",
+        "Limpieza de Calzado"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Tecnología",
+        "Accesorios de Celular y Cómputo",
+        "Relojes Inteligentes"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Temporada y Celebraciones",
+        "Navidad",
+        "Textiles Navideños"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Temporada y Celebraciones",
+        "Navidad",
+        "Empaque Navideño"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Temporada y Celebraciones",
+        "Halloween",
+        "Calabazas"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Colores"
+      ],
+      "to": [
+        "Librería y Oficina",
+        "Colores y Dibujo"
+      ],
+      "why": "Escritura y Corrección tenía 12 subcategorías: colorear/dibujar pasa a su propia categoría"
+    },
+    {
+      "op": "move",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Crayolas y Óleos"
+      ],
+      "to": [
+        "Librería y Oficina",
+        "Colores y Dibujo"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Plumones Escolares"
+      ],
+      "to": [
+        "Librería y Oficina",
+        "Colores y Dibujo"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Borradores y Tajadores"
+      ],
+      "to": "Borradores",
+      "why": "Borradores y tajadores son productos distintos"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Escritura y Corrección",
+        "Tajadores"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Librería y Oficina",
+        "Oficina",
+        "Pegamentos y Siliconas"
+      ],
+      "to": [
+        "Librería y Oficina",
+        "Pegamentos"
+      ],
+      "why": "Silicona, goma y pistola son productos distintos; Oficina tenía 10 subcategorías"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Librería y Oficina",
+        "Pegamentos",
+        "Pegamentos y Siliconas"
+      ],
+      "to": "Siliconas"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Pegamentos",
+        "Gomas y Colas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Pegamentos",
+        "Pistolas de Silicona"
+      ]
+    },
+    {
+      "op": "move",
+      "path": [
+        "Librería y Oficina",
+        "Oficina",
+        "Cintas Adhesivas y Contact"
+      ],
+      "to": [
+        "Librería y Oficina",
+        "Cintas Adhesivas"
+      ],
+      "why": "Masking, cinta de embalaje y contact son productos distintos"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Librería y Oficina",
+        "Cintas Adhesivas",
+        "Cintas Adhesivas y Contact"
+      ],
+      "to": "Embalaje y Scotch"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Cintas Adhesivas",
+        "Masking"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Cintas Adhesivas",
+        "Contact"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Librería y Oficina",
+        "Escolar",
+        "Maletas Escolares con Ruedas"
+      ],
+      "why": "Las maletas con ruedas (SCOOL) tienen otro precio que las mochilas"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Alimentos Nacionales",
+        "Dulces y Chocolates",
+        "Chupetines"
+      ],
+      "why": "Chupetines (Bon Bon Bum, chupetes) separados de caramelos"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Alimentos y Bebidas Asiáticas",
+        "Bebidas Asiáticas",
+        "Jugo y Nata de Coco"
+      ],
+      "to": "Jugos y Bebidas Frutadas"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Alimentos y Bebidas Asiáticas",
+        "Bebidas Asiáticas",
+        "Bebidas con Nata de Coco"
+      ],
+      "why": "35 bebidas en una sola subcategoría: se separa nata de coco / jugos"
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Fiestas y Regalos",
+        "Cumpleaños y Fiestas",
+        "Globos e Infladores"
+      ],
+      "to": "Globos",
+      "why": "Globos e infladores son productos distintos"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Fiestas y Regalos",
+        "Cumpleaños y Fiestas",
+        "Infladores"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Fiestas y Regalos",
+        "Cumpleaños y Fiestas",
+        "Gorritos y Cotillón"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Cocina y Comedor",
+        "Vajilla",
+        "Bowls, Fuentes y Bandejas"
+      ],
+      "to": "Fuentes y Bandejas",
+      "why": "Bowls/tazones separados de fuentes y bandejas"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Cocina y Comedor",
+        "Vajilla",
+        "Bowls y Tazones"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Limpieza",
+        "Accesorios de Limpieza",
+        "Esponjas, Paños y Guantes"
+      ],
+      "to": "Esponjas",
+      "why": "Esponjas separadas de paños y guantes"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Limpieza",
+        "Accesorios de Limpieza",
+        "Paños y Guantes"
+      ]
+    },
+    {
+      "op": "rename",
+      "path": [
+        "Electrohogar",
+        "Iluminación y Eléctricos",
+        "Luces y Focos"
+      ],
+      "to": "Focos",
+      "why": "Focos separados de lámparas, reflectores y luces decorativas"
+    },
+    {
+      "op": "create",
+      "path": [
+        "Electrohogar",
+        "Iluminación y Eléctricos",
+        "Luces y Lámparas"
+      ]
+    },
+    {
+      "op": "create",
+      "path": [
+        "Belleza",
+        "Maquillaje de Ojos y Cejas",
+        "Ceras y Pomadas de Cejas"
+      ]
+    }
+  ]
+}

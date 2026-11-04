@@ -1,0 +1,612 @@
+{
+  "Alimentos Nacionales": {
+    "Dulces y Chocolates": {
+      "Bocaditos Dulces": [],
+      "Caramelos": [],
+      "Chicles": [],
+      "Chocolates": [],
+      "Gomitas": [],
+      "Marshmallows": []
+    },
+    "Galletas y Panadería": {
+      "Bizcochos y Panetelas": [],
+      "Galletas": [],
+      "Panes Envasados": []
+    },
+    "Snacks": {
+      "Barras de Cereal": [],
+      "Frutos Secos": [],
+      "Snacks Salados": []
+    }
+  },
+  "Alimentos y Bebidas Asiáticas": {
+    "Bebidas Asiáticas": {
+      "Aloe Vera": [],
+      "Bebidas de Café": [],
+      "Bubble Tea (Boba)": [],
+      "Jugo y Nata de Coco": []
+    },
+    "Licores Asiáticos": {
+      "Licores Frutales y Cocteles": [],
+      "Sake": [],
+      "Soju": []
+    },
+    "Snacks y Dulces Asiáticos": {
+      "Bocaditos Asiáticos": [],
+      "Caramelos y Gomitas Asiáticos": [],
+      "Chocolates y Pasteles Asiáticos": [],
+      "Galletas Asiáticos": [],
+      "Marshmallows Asiáticos": [],
+      "Snacks Salados Asiáticos": []
+    },
+    "Sopas y Fideos Instantáneos": {
+      "Fideos de Arroz": [],
+      "Fideos de Trigo (Ramen)": [],
+      "Sopas Instantáneas": []
+    },
+    "Té e Infusiones": {
+      "Té Filtrante": []
+    }
+  },
+  "Bebés e Infantil": {
+    "Accesorios del Bebé": {
+      "Mordedores y Chupones": []
+    },
+    "Alimentación del Bebé": {
+      "Biberones y Tetinas": []
+    },
+    "Higiene y Cuidado del Bebé": {
+      "Accesorios de Aseo del Bebé": [],
+      "Cuidado Infantil": []
+    }
+  },
+  "Belleza": {
+    "Accesorios de Belleza": {
+      "Brochas de Maquillaje": [],
+      "Espejos": [],
+      "Esponja para Maquillaje": [],
+      "Masajeadores y Gua Sha": [],
+      "Organizadores de Maquillaje": []
+    },
+    "Cuidado Corporal": {
+      "Aceites Corporales": [],
+      "Cremas Corporales": [],
+      "Cremas de Manos": [],
+      "Depilación": [],
+      "Exfoliantes Corporales": [],
+      "Geles de Baño": []
+    },
+    "Cuidado Facial": {
+      "Aceites Faciales": [],
+      "Cremas Faciales": [],
+      "Desmaquillantes": [],
+      "Jabones Faciales": [],
+      "Limpiadores Faciales": [],
+      "Mascarillas Faciales": [],
+      "Protectores Solares": [],
+      "Sérums Faciales": [],
+      "Tónicos y Aguas Micelares": []
+    },
+    "Maquillaje de Labios": {
+      "Bálsamos Labiales": [],
+      "Gloss Labiales": [],
+      "Labiales": [],
+      "Tintas Labiales": []
+    },
+    "Maquillaje de Ojos y Cejas": {
+      "Delineadores": [],
+      "Lápices de Cejas": [],
+      "Máscaras de Pestañas": [],
+      "Perfiladores de Cejas": [],
+      "Rizadores de Pestañas": [],
+      "Sombras de Ojos": []
+    },
+    "Maquillaje de Rostro": {
+      "Bases y Correctores": [],
+      "Iluminadores": [],
+      "Paletas y Sets de Maquillaje": [],
+      "Polvos y Rubores": [],
+      "Primers y Fijadores": []
+    },
+    "Perfumería": {
+      "Colonias y Splashes": [],
+      "Perfumes Infantiles": [],
+      "Perfumes de Hombre": [],
+      "Perfumes de Mujer": [],
+      "Sets de Perfumes": []
+    },
+    "Uñas": {
+      "Esmaltes y Uñas Postizas": []
+    }
+  },
+  "Calzado": {
+    "Accesorios de Calzado": {
+      "Plantillas": []
+    },
+    "Sandalias y Pantuflas": {
+      "Pantuflas": [],
+      "Sandalias de Adulto": [],
+      "Sandalias de Niños": []
+    },
+    "Zapatillas": {
+      "Zapatillas Urbanas": []
+    }
+  },
+  "Cuidado Personal y Salud": {
+    "Afeitado": {
+      "Espumas y Geles de Afeitar": [],
+      "Máquinas de Afeitar y Repuestos": []
+    },
+    "Cuidado Bucal": {
+      "Cepillos Dentales": [],
+      "Enjuagues Bucales": [],
+      "Pastas Dentales": []
+    },
+    "Cuidado del Cabello": {
+      "Aceites Capilares": [],
+      "Acondicionadores": [],
+      "Geles y Estilizadores": [],
+      "Shampoos": [],
+      "Tintes": [],
+      "Tratamientos Capilares": []
+    },
+    "Higiene Personal": {
+      "Desodorantes": [],
+      "Hisopos": [],
+      "Jabones Corporales": [],
+      "Jabones Líquidos para Manos": [],
+      "Talcos": [],
+      "Toallitas Húmedas Básicas": [],
+      "Toallitas Húmedas Licencia": []
+    },
+    "Papeles y Servilletas": {
+      "Papel Higiénico": [],
+      "Papel Toalla": [],
+      "Servilletas": []
+    },
+    "Protección Femenina": {
+      "Toallas Higiénicas": []
+    },
+    "Salud y Botiquín": {
+      "Primeros Auxilios": [],
+      "Repelentes": []
+    }
+  },
+  "Deportes y Fitness": {
+    "Fitness y Yoga": {
+      "Equipamiento de Fitness": [],
+      "Mats y Colchonetas": []
+    }
+  },
+  "Electrohogar": {
+    "Cuidado Personal Eléctrico": {
+      "Máquinas de Corte de Cabello": [],
+      "Planchas y Rizadoras de Cabello": [],
+      "Secadoras de Cabello": []
+    },
+    "Electrodomésticos de Cocina": {
+      "Electrodomésticos Menores": [],
+      "Hervidores": [],
+      "Licuadoras y Batidoras": []
+    },
+    "Electrodomésticos del Hogar": {
+      "Aspiradoras": [],
+      "Ventiladores": []
+    },
+    "Iluminación y Eléctricos": {
+      "Cintas LED": [],
+      "Extensiones e Interruptores": [],
+      "Linternas": [],
+      "Luces y Focos": []
+    }
+  },
+  "Ferretería y Jardín": {
+    "Cerrajería y Seguridad": {
+      "Candados y Cadenas": []
+    },
+    "Herramientas": {
+      "Accesorios de Protección": [],
+      "Cuerdas y Sogas": [],
+      "Herramientas Manuales": [],
+      "Sets de Herramientas": []
+    },
+    "Jardín": {
+      "Atomizadores y Pulverizadores": [],
+      "Maceteros": [],
+      "Plantas Artificiales": [],
+      "Toldos y Sombrillas": []
+    }
+  },
+  "Fiestas y Cumpleaños": {
+    "Cumpleaños y Fiestas": {
+      "Cortinas de Cumpleaños": [],
+      "Cubiertos de Cumpleaños": [],
+      "Decoración de Cumpleaños": [],
+      "Globos e Infladores": [],
+      "Platos de Cumpleaños": [],
+      "Vasos de Cumpleaños": [],
+      "Velas de Cumpleaños": []
+    },
+    "Empaque y Regalo": {
+      "Bolsas de Regalo": [],
+      "Cajas de Regalo": [],
+      "Papel de Regalo": []
+    },
+    "Piñatas": {
+      "Palos para Piñata": [],
+      "Piñatas": [],
+      "Rellenos de Piñata": []
+    }
+  },
+  "Hogar y Decoración": {
+    "Baño": {
+      "Accesorios de Baño": [],
+      "Cortinas de Baño": [],
+      "Dispensador de Jabón": [],
+      "Escobilla para Baño": [],
+      "Esponjas de Baño": [],
+      "Jaboneras": [],
+      "Porta Cepillo": [],
+      "Toallas": []
+    },
+    "Cocina": {
+      "Aceiteros": [],
+      "Afilador de Cuchillos": [],
+      "Bowls, Fuentes y Bandejas": [],
+      "Coladores": [],
+      "Condimenteros y Especieros": [],
+      "Cucharas": [],
+      "Cucharones": [],
+      "Cuchillos": [],
+      "Descartables de Cocina": [],
+      "Espátulas": [],
+      "Exprimidores": [],
+      "Frascos y Tarros": [],
+      "Fósforos y Encendedores": [],
+      "Mandiles": [],
+      "Ollas y Sartenes": [],
+      "Organizadores de Cocina": [],
+      "Palitos y Brochetas": [],
+      "Ralladores y Peladores": [],
+      "Repostería y Moldes": [],
+      "Tabla de Picar": [],
+      "Tapers de Vidrio": [],
+      "Tapers y Contenedores": [],
+      "Tenedores": [],
+      "Termos": [],
+      "Teteras": [],
+      "Tomatodos y Botellas": [],
+      "Utensilios de Cocina": []
+    },
+    "Comedor": {
+      "Accesorios de Mesa": [],
+      "Ajiceros": [],
+      "Azucareros": [],
+      "Copas": [],
+      "Fruteros": [],
+      "Jarras de Plástico": [],
+      "Jarras de Vidrio": [],
+      "Manteles, Individuales y Servilletas": [],
+      "Platos Tendidos": [],
+      "Platos de Sopa": [],
+      "Porta Cubierto": [],
+      "Tazas de Cerámica": [],
+      "Tazas y Mugs": [],
+      "Vasos": []
+    },
+    "Decoración": {
+      "Alcancías": [],
+      "Alfombras y Tapetes": [],
+      "Barra de Cortina": [],
+      "Calendarios y Almanaques": [],
+      "Cortinas": [],
+      "Cuadros y Pegatinas de Pared": [],
+      "Flores y Floreros": [],
+      "Fundas Decorativas": [],
+      "Lámparas Decorativas": [],
+      "Portarretratos": [],
+      "Relojes de Pared": [],
+      "Velas Decorativas": []
+    },
+    "Dormitorio": {
+      "Almohadas y Cojines": [],
+      "Edredones y Juegos de Sábanas": []
+    },
+    "Mercería": {
+      "Accesorios de Costura": []
+    },
+    "Muebles": {
+      "Bancos y Puffs": [],
+      "Estantes": [],
+      "Mesas": [],
+      "Muebles Infantiles": [],
+      "Roperos y Closets": [],
+      "Sillas": [],
+      "Zapateras": []
+    },
+    "Multiusos y Packs": {
+      "Packs y Kits Variados": []
+    },
+    "Organización": {
+      "Cajas Organizadoras": [],
+      "Carritos de Compras": [],
+      "Cestos y Canastos": [],
+      "Colgadores de Ropa": [],
+      "Ganchos de Ropa": [],
+      "Organizadores Multiuso": [],
+      "Organizadores de Escritorio y Oficina": [],
+      "Papeleras": [],
+      "Percheros": []
+    }
+  },
+  "Juguetes y Entretenimiento": {
+    "Armas de Juguete": {
+      "Espadas": [],
+      "Lanzadores": [],
+      "Pistolas de Hidrogel": [],
+      "Pistolas y Metralletas": []
+    },
+    "Burbujas y Agua": {
+      "Burbujeros": []
+    },
+    "Control Remoto": {
+      "Otros a Control Remoto": [],
+      "Vehículos a Control Remoto": []
+    },
+    "Deportes y Aire Libre": {
+      "Deportes y Movilidad": []
+    },
+    "Didácticos y Creativos": {
+      "Arte y Manualidades": [],
+      "Bloques y Construcción": [],
+      "Estimulación Temprana": [],
+      "Rompecabezas": []
+    },
+    "Figuras y Personajes": {
+      "Animales y Granja": [],
+      "Coleccionables y Tendencia": [],
+      "Dinosaurios": [],
+      "Robots y transformables": [],
+      "Soldados y Acción": []
+    },
+    "Juego de Roles": {
+      "Belleza y Maquillaje": [],
+      "Cocina, Loza y Té": [],
+      "Hogar y Compras": [],
+      "Mascotas": [],
+      "Oficios y Disfraces": []
+    },
+    "Juegos al Aire Libre": {
+      "Burbujas": [],
+      "Hidrogel y Pistolas de Agua": [],
+      "Pelotas y Juegos de Exterior": [],
+      "Piscinas y Juegos de Playa": []
+    },
+    "Juegos de Mesa y Habilidad": {
+      "Destreza": [],
+      "Juegos de Mesa": []
+    },
+    "Juguetes": {
+      "Figuras de Animales y Dinosaurios": [],
+      "Juegos de Habilidad": [],
+      "Juguetes Didácticos": [],
+      "Juguetes Musicales": [],
+      "Juguetes Variados": [],
+      "Pistolas de Juguete": [],
+      "Slime y Masas": [],
+      "Vehículos y Carros": []
+    },
+    "Musicales": {
+      "Instrumentos": [],
+      "Sonajas (primera infancia)": []
+    },
+    "Muñecas": {
+      "Casas, Muebles y Accesorios": [],
+      "Muñecas": [],
+      "Muñecas Bebé": [],
+      "Sets de Muñeca con Accesorios": []
+    },
+    "Sensoriales y Antiestrés": {
+      "Slime, Squishy y Arena": []
+    },
+    "Vehículos": {
+      "Aviones": [],
+      "Camiones, Buses y Trailers": [],
+      "Carros y Autos": [],
+      "Construcción y Trabajo": [],
+      "Motos y Cuatrimotos": [],
+      "Pistas y Playsets": []
+    }
+  },
+  "Librería y Oficina": {
+    "Arte y Manualidades": {
+      "Microporosos y Goma Eva": [],
+      "Pinceles y Brochas": [],
+      "Plastilinas y Masas": [],
+      "Punzones y Accesorios de Arte": [],
+      "Sets de Arte": [],
+      "Stickers y Calcomanías": [],
+      "Témperas y Pinturas": []
+    },
+    "Escolar": {
+      "Botellas Escolares": [],
+      "Cartucheras Escolares": [],
+      "Estuches Geométricos": [],
+      "Loncheras Escolares": [],
+      "Mochilas Escolares": [],
+      "Taperes Escolares": []
+    },
+    "Escritura y Corrección": {
+      "Borradores y Tajadores": [],
+      "Cartuchos y Recargas": [],
+      "Colores y Crayolas": [],
+      "Correctores": [],
+      "Lápices y Lapiceros": [],
+      "Plumones y Marcadores": []
+    },
+    "Oficina": {
+      "Archivadores y Folders": [],
+      "Cintas Adhesivas y Contact": [],
+      "Clips y Sujetadores": [],
+      "Cutters y Navajas": [],
+      "Engrapadoras y Perforadoras": [],
+      "Pegamentos y Siliconas": [],
+      "Pizarras, Tizas y Accesorios": [],
+      "Tijeras y Reglas": []
+    },
+    "Papelería": {
+      "Cuadernos y Blocks": [],
+      "Forros para Cuadernos": [],
+      "Libros y Diccionarios": [],
+      "Notas Adhesivas": [],
+      "Papeles y Cartulinas": [],
+      "Sobres": []
+    }
+  },
+  "Limpieza": {
+    "Accesorios de Limpieza": {
+      "Baldes y Trapeadores": [],
+      "Escobas y Recogedores": [],
+      "Escobillas de Ropa": [],
+      "Esponjas, Paños y Guantes": [],
+      "Toallas y Trapos de Limpieza": []
+    },
+    "Control de Plagas": {
+      "Insecticidas": [],
+      "Trampas y Cebos": []
+    },
+    "Cuidado de la Ropa": {
+      "Detergentes Líquidos": [],
+      "Detergentes en Polvo": [],
+      "Jabones en Barra": [],
+      "Quitamanchas": [],
+      "Suavizantes": []
+    },
+    "Cuidado del Auto": {
+      "Ambientadores de Auto": [],
+      "Shampoo para Auto": [],
+      "Siliconas y Protectores": []
+    },
+    "Desinfectantes y Lejías": {
+      "Agua Oxigenada": [],
+      "Alcohol y Alcohol en Gel": [],
+      "Desinfectantes y Pinos": [],
+      "Lejías": []
+    },
+    "Lavavajillas": {
+      "Lavavajillas Líquido": [],
+      "Lavavajillas en Pasta": []
+    },
+    "Limpiadores": {
+      "Abrillantadores": [],
+      "Ambientadores": [],
+      "Limpiadores Multiuso": [],
+      "Limpiavidrios": [],
+      "Quitagrasas": [],
+      "Ácidos y Quitasarros": []
+    },
+    "Siliconas y Protectores": {}
+  },
+  "Mascotas": {
+    "Accesorios y Juguetes": {
+      "Juguetes y Accesorios para Mascotas": [],
+      "Platos y Bebederos para Mascotas": []
+    },
+    "Alimentos y Arena": {
+      "Alimentos para Mascotas": [],
+      "Arena Sanitaria": []
+    },
+    "Higiene y Salud de Mascotas": {
+      "Peines, Cepillos y Cortadoras": []
+    }
+  },
+  "Moda y Accesorios": {
+    "Accesorios de Abrigo": {
+      "Bufandas": [],
+      "Calentadores": [],
+      "Guantes de Adultos": [],
+      "Orejeras": []
+    },
+    "Accesorios para el Cabello": {
+      "Colets y Ganchos": [],
+      "Peines y Cepillos": [],
+      "Vinchas": []
+    },
+    "Carteras y Bolsos": {
+      "Billeteras": [],
+      "Bolsos": [],
+      "Carteras": [],
+      "Monederos": [],
+      "Morrales y Canguros": []
+    },
+    "Joyería y Bisutería": {
+      "Aretes": [],
+      "Joyeros": [],
+      "Pulseras": [],
+      "Relojes": []
+    },
+    "Organizadores y Viaje": {
+      "Accesorios de Viaje": [],
+      "Neceser y Portacosméticos": []
+    },
+    "Otros Accesorios": {
+      "Lentes de Sol": [],
+      "Paraguas": []
+    },
+    "Ropa Infantil": {
+      "Guantes, Chullos y Chalinas": [],
+      "Medias Infantiles": [],
+      "Ropa de Niñas": []
+    },
+    "Ropa Interior y Pijamas": {
+      "Fajas y Modeladores": [],
+      "Medias y Panties": [],
+      "Pijamas de Mujer": []
+    },
+    "Ropa de Mujer": {
+      "Casacas y Abrigos": [],
+      "Pantalones y Leggins": [],
+      "Polos y Blusas": [],
+      "Vestidos y Conjuntos": []
+    }
+  },
+  "Tecnología": {
+    "Accesorios de Celular y Cómputo": {
+      "Aros de Luz": [],
+      "Cargadores y Cables": [],
+      "Pad Mouse": [],
+      "Soportes para Celular": [],
+      "Teclados y Mouse": []
+    },
+    "Audio": {
+      "Audífonos": [],
+      "Parlantes": []
+    }
+  },
+  "Temporada y Celebraciones": {
+    "Fechas Especiales": {
+      "Regalos Día de la Madre": [],
+      "Regalos Día del Padre": []
+    },
+    "Halloween": {
+      "Decoración de Halloween": [],
+      "Disfraces y Pelucas": []
+    },
+    "Navidad": {
+      "Accesorios Navideños de Mesa y Vestir": [],
+      "Esferas y Adornos para Árbol": [],
+      "Figuras y Adornos Navideños": [],
+      "Guirnaldas y Coronas": [],
+      "Luces Navideñas": [],
+      "Árboles de Navidad": []
+    }
+  },
+  "Tendencias Kawaii": {
+    "Llaveros": {
+      "Llaveros Kawaii": []
+    },
+    "Peluches": {
+      "Peluches Kawaii": []
+    }
+  }
+}
