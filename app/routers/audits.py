@@ -18,6 +18,7 @@ Tambien expone POST /audits/fix-naming para renombrar en BSale + BD
 todos los product_types mal nombrados (o un subset por ids).
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import Depends, APIRouter, HTTPException
@@ -27,8 +28,9 @@ from pydantic import BaseModel, Field
 
 from app.auth import CurrentCompany, get_current_company, require_admin
 from app.database import get_db
+from app.kawii_matrix import cache as matrix_cache
 from harvester import bsale_client
-from harvester.tenant_context import set_current_tenant
+from harvester.tenant_context import tenant_scope
 
 
 # Auditorías: cualquier usuario logueado en una empresa puede ver inconsistencias.
@@ -371,50 +373,60 @@ async def fix_naming(
     # Para hablar con BSale necesitamos el token de la empresa activa.
     # El backend descifra el token y lo activa via tenant_context.
     # Cargar el token de la empresa
-    tok_row = await db.execute(text("""
-        SELECT slug, pgp_sym_decrypt(bsale_token, :key)::text AS token
-        FROM companies WHERE id = :cid
-    """), {"cid": cid, "key": _token_key()})
-    tk = tok_row.mappings().first()
-    if not tk or not tk["token"]:
-        raise HTTPException(500, f"No hay token BSale cargado para company {cid}")
-    set_current_tenant(cid, tk["token"], tk["slug"])
-
     fixed:   list[dict] = []
     failed:  list[dict] = []
     skipped: list[dict] = []
 
-    for c in candidates:
-        pt_id    = c["id"]
-        new_name = c["expected_name"]
-        old_name = c["current_name"]
+    if payload.dry_run:
+        for c in candidates:
+            skipped.append({
+                "id": c["id"],
+                "from": c["current_name"],
+                "to": c["expected_name"],
+                "reason": "dry_run",
+            })
+    elif candidates:
+        tok_row = await db.execute(text("""
+            SELECT slug, pgp_sym_decrypt(bsale_token, :key)::text AS token
+            FROM companies WHERE id = :cid
+        """), {"cid": cid, "key": _token_key()})
+        tk = tok_row.mappings().first()
+        if not tk or not tk["token"]:
+            raise HTTPException(500, f"No hay token BSale cargado para company {cid}")
 
-        if payload.dry_run:
-            skipped.append({"id": pt_id, "from": old_name, "to": new_name,
-                            "reason": "dry_run"})
-            continue
+        def _put_pt_name(pt_id: int, new_name: str) -> None:
+            with tenant_scope(cid, tk["token"], tk["slug"]):
+                bsale_client.put(f"product_types/{pt_id}.json", {"id": pt_id, "name": new_name})
 
-        try:
-            bsale_client.put(f"product_types/{pt_id}.json", {"name": new_name})
-        except Exception as exc:
-            failed.append({"id": pt_id, "from": old_name, "to": new_name,
-                           "step": "bsale", "error": str(exc)})
-            continue
+        for c in candidates:
+            pt_id    = c["id"]
+            new_name = c["expected_name"]
+            old_name = c["current_name"]
 
-        try:
-            await db.execute(text("""
-                UPDATE product_types
-                   SET name = :name, synced_at = NOW()
-                 WHERE company_id = :cid AND bsale_product_type_id = :pt_id
-            """), {"name": new_name, "pt_id": pt_id, "cid": cid})
-            await db.commit()
-        except Exception as exc:
-            await db.rollback()
-            failed.append({"id": pt_id, "from": old_name, "to": new_name,
-                           "step": "internal_db", "error": str(exc)})
-            continue
+            try:
+                await asyncio.to_thread(_put_pt_name, pt_id, new_name)
+            except Exception as exc:
+                failed.append({"id": pt_id, "from": old_name, "to": new_name,
+                               "step": "bsale", "error": str(exc)})
+                continue
 
-        fixed.append({"id": pt_id, "from": old_name, "to": new_name})
+            try:
+                await db.execute(text("""
+                    UPDATE product_types
+                       SET name = :name, synced_at = NOW()
+                     WHERE company_id = :cid AND bsale_product_type_id = :pt_id
+                """), {"name": new_name, "pt_id": pt_id, "cid": cid})
+                await db.commit()
+            except Exception as exc:
+                await db.rollback()
+                failed.append({"id": pt_id, "from": old_name, "to": new_name,
+                               "step": "internal_db", "error": str(exc)})
+                continue
+
+            fixed.append({"id": pt_id, "from": old_name, "to": new_name})
+
+        if fixed:
+            matrix_cache.invalidate(company_id=cid)
 
     return {
         "ok": True,

@@ -9,6 +9,7 @@ Provee:
 """
 
 import logging
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -117,7 +118,7 @@ def get_conn():
         _pool.putconn(conn, close=broken)
 
 
-def execute_batch(sql: str, rows: list[tuple], page_size: int = 100) -> int:
+def execute_batch(sql: str, rows: list[tuple], page_size: int = 1000) -> int:
     """
     Ejecuta un batch de inserts/upserts eficientemente.
 
@@ -206,6 +207,9 @@ def sync_finish(
 
 # --- Data Quality ---
 
+_quality_lock = threading.Lock()
+
+
 def log_quality_issue(
     entity: str,
     bsale_id: int | None,
@@ -218,13 +222,45 @@ def log_quality_issue(
     Requiere tenant activo."""
     try:
         cid = current_company_id()
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO data_quality_issues
-                       (company_id, entity, bsale_id, field, issue_type, description, raw_value)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                    (cid, entity, bsale_id, field, issue_type, description, raw_value),
-                )
+        with _quality_lock:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO data_quality_issues
+                           (company_id, entity, bsale_id, field, issue_type, description, raw_value)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                        (cid, entity, bsale_id, field, issue_type, description, raw_value),
+                    )
     except Exception as exc:
         logger.error("No se pudo registrar issue de calidad: %s", exc)
+
+
+# --- Cadencia de fases "caras" ---
+
+def hours_since_last_success(entity: str, mode: str | None = None) -> float | None:
+    """Horas desde el último sync SUCCESS de `entity` para la empresa activa.
+
+    Si `mode` se indica, solo cuenta corridas cuyo sync_log.params->>'mode'
+    coincide (ej: 'full' para recepciones con historial completo).
+    Devuelve None si nunca corrió con éxito (o si la consulta falla).
+    Lo usan las fases semanales para decidir si se saltan.
+    """
+    try:
+        cid = current_company_id()
+        sql = """
+            SELECT EXTRACT(EPOCH FROM (NOW() - MAX(finished_at))) / 3600.0
+            FROM sync_log
+            WHERE company_id = %s AND entity = %s AND status = 'SUCCESS'
+        """
+        params: list = [cid, entity]
+        if mode is not None:
+            sql += " AND params->>'mode' = %s"
+            params.append(mode)
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+    except Exception as exc:
+        logger.warning("hours_since_last_success(%s) fallo: %s", entity, exc)
+        return None

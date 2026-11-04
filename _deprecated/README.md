@@ -7,3 +7,4 @@ Nada aquí se ejecuta en producción. Si algo vuelve a hacer falta, restaurarlo 
 - `run_daily_sync.py` — wrapper redundante de `python -m tools.maintenance.mt_sync`.
 - `analytics/generar_reporte_avanzado.py` — apuntaba a otro proyecto/DB (rutas hardcodeadas).
 - `analytics/inventory_report.py` (+ `reporte_inventario.md`) — CLI de inventario sin caller.
+- `scripts/` (`extract_schema.py`, `test_query.py`, `get_margin_example.py`, `query_mo.py`, `query_user.py`) — scripts ad-hoc de diagnóstico puntual que estaban sueltos en la raíz (credenciales sanitizadas para usar `app.database.engine`).

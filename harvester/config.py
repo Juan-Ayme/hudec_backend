@@ -29,13 +29,18 @@ load_dotenv(_env_path)
 BSALE_BASE_URL: str = "https://api.bsale.io/v1"
 
 # --- Limites y comportamiento del cliente HTTP ---
-BSALE_MAX_RPS: int = 9      # Max requests por segundo (limite oficial de BSale)
+BSALE_MAX_RPS: int = int(os.environ.get("BSALE_MAX_RPS", "9"))  # Max requests por segundo (limite oficial de BSale)
 BSALE_PAGE_SIZE: int = 50   # Registros por pagina (maximo que acepta BSale)
 BSALE_TIMEOUT: int = 12     # Segundos antes de considerar un request como fallido.
                             # Antes era 25 — la P99 real es <2s; un timeout más bajo
                             # corta más rápido los stalls y deja al retry handler trabajar.
 BSALE_MAX_RETRIES: int = 3  # Reintentos automaticos ante errores de red o 5xx
-BSALE_MAX_WORKERS: int = 8  # Hilos paralelos para llamadas que se pueden paralelizar.
+BSALE_MAX_WORKERS: int = int(os.environ.get("BSALE_MAX_WORKERS", "20"))
+                            # Hilos paralelos para llamadas que se pueden paralelizar.
+                            # 2026-11: subido 8 → 20. La latencia real de BSale es
+                            # ~2s/request, así que con 8 hilos el techo efectivo era
+                            # ~4 RPS. Con 20 se llega al tope de 9 RPS, que lo sigue
+                            # imponiendo el RateLimiter (no más requests por segundo).
                             # El rate limit duro es 9 RPS (no 9 conexiones), por eso
                             # 8 workers tienen margen sin overflow. Subido de 6 → 8.
                              # (ej: costos de variantes, atributos de categorias)

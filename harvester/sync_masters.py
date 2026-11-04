@@ -229,9 +229,11 @@ def _load_subcategory_resolver() -> dict[str, int]:
     Retorna mapping nombre_lower -> subcategory_id (PK en DB).
     Admite dos claves:
       - "category / subcategory"  (nombre tal como lo trae BSale)
-      - "subcategory"             (fallback)
+      - "subcategory"             (fallback solo si el nombre de subcategoría es único en la empresa)
     """
     resolver: dict[str, int] = {}
+    bare_counts: dict[str, int] = {}
+    bare_first_id: dict[str, int] = {}
     cid = current_company_id()
     with db.get_conn() as conn:
         with conn.cursor() as cur:
@@ -242,8 +244,15 @@ def _load_subcategory_resolver() -> dict[str, int]:
                 WHERE s.company_id = %s
             """, (cid,))
             for sub_id, sub_name, cat_name in cur.fetchall():
-                resolver[f"{cat_name} / {sub_name}".lower()] = sub_id
-                resolver.setdefault(sub_name.lower(), sub_id)
+                s_clean = (sub_name or "").strip().lower()
+                c_clean = (cat_name or "").strip().lower()
+                resolver[f"{c_clean} / {s_clean}"] = sub_id
+                if s_clean:
+                    bare_counts[s_clean] = bare_counts.get(s_clean, 0) + 1
+                    bare_first_id.setdefault(s_clean, sub_id)
+    for s_clean, count in bare_counts.items():
+        if count == 1:
+            resolver.setdefault(s_clean, bare_first_id[s_clean])
     return resolver
 
 
@@ -417,7 +426,7 @@ def sync_product_types() -> dict:
                            "Ejecuta sync_taxonomy() primero.")
 
         cid = current_company_id()
-        # Obtener categorias que tienen historial local (productos asociados)
+        # Obtener categorias con historial local y mapeos manuales ya existentes en BD
         with db.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -427,7 +436,15 @@ def sync_product_types() -> dict:
                 )
                 pt_with_history = {row[0] for row in cur.fetchall()}
 
+                cur.execute(
+                    "SELECT bsale_product_type_id, subcategory_id FROM product_types "
+                    "WHERE company_id = %s",
+                    (cid,),
+                )
+                existing_pts = {row[0]: row[1] for row in cur.fetchall()}
+
         rows = []
+        active_bsale_pt_ids: list[int] = []
         for item in items:
             ptid = _safe_int(item.get("id"))
             if ptid == 0:
@@ -435,14 +452,22 @@ def sync_product_types() -> dict:
                 continue
 
             is_active = _bsale_state_active(item.get("state"))
+            if is_active:
+                active_bsale_pt_ids.append(ptid)
 
-            # REGLA: Si esta desactivada en BSale y no tiene historial local, la ignoramos.
-            if not is_active and ptid not in pt_with_history:
+            # REGLA: Si esta desactivada en BSale, no tiene historial local y tampoco
+            # existía en nuestra tabla product_types, la ignoramos. Si ya existía en BD,
+            # la actualizamos para que quede is_active=FALSE.
+            if not is_active and ptid not in pt_with_history and ptid not in existing_pts:
                 stats["skipped"] += 1
                 continue
 
             raw_name = _clean_str(item.get("name"), "SIN CATEGORIA")
-            sub_id = resolver.get(raw_name.lower())
+            # Preservar siempre el mapeo manual que ya exista en BD
+            sub_id = existing_pts.get(ptid)
+            if sub_id is None:
+                norm_name = " / ".join(p.strip() for p in raw_name.split("/")).lower() if "/" in raw_name else raw_name.lower()
+                sub_id = resolver.get(norm_name) or resolver.get(raw_name.lower())
 
             # Fallback: aceptar "/" con o sin espacios ("Cat / Sub" o "Cat/Sub")
             if sub_id is None and "/" in raw_name:
@@ -458,7 +483,7 @@ def sync_product_types() -> dict:
                 ptid,
                 raw_name,
                 sub_id,
-                _bsale_state_active(item.get("state")),
+                is_active,
                 is_mapped,
             ))
 
@@ -468,12 +493,37 @@ def sync_product_types() -> dict:
             VALUES (%s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (company_id, bsale_product_type_id) DO UPDATE SET
                 name           = EXCLUDED.name,
-                subcategory_id = EXCLUDED.subcategory_id,
+                subcategory_id = COALESCE(product_types.subcategory_id, EXCLUDED.subcategory_id),
                 is_active      = EXCLUDED.is_active,
-                is_mapped      = EXCLUDED.is_mapped,
+                is_mapped      = (COALESCE(product_types.subcategory_id, EXCLUDED.subcategory_id) IS NOT NULL),
                 synced_at      = NOW()
         """
         stats["inserted"] = db.execute_batch(sql, rows)
+
+        # Marcar como is_active=FALSE aquellos product_types locales que fueron eliminados/desactivados en BSale
+        if items:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    if active_bsale_pt_ids:
+                        cur.execute(
+                            """
+                            UPDATE product_types
+                               SET is_active = FALSE, synced_at = NOW()
+                             WHERE company_id = %s
+                               AND is_active = TRUE
+                               AND NOT (bsale_product_type_id = ANY(%s))
+                            """,
+                            (cid, active_bsale_pt_ids),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE product_types
+                               SET is_active = FALSE, synced_at = NOW()
+                             WHERE company_id = %s AND is_active = TRUE
+                            """,
+                            (cid,),
+                        )
 
         if stats["unmapped"]:
             logger.warning("product_types sin mapeo en JSON de taxonomía: %d/%d",
@@ -678,15 +728,16 @@ def sync_variants() -> dict:
                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (company_id, bsale_product_type_id) DO UPDATE SET
                     name           = EXCLUDED.name,
-                    subcategory_id = EXCLUDED.subcategory_id,
+                    subcategory_id = COALESCE(product_types.subcategory_id, EXCLUDED.subcategory_id),
                     is_active      = EXCLUDED.is_active,
-                    is_mapped      = EXCLUDED.is_mapped,
+                    is_mapped      = (COALESCE(product_types.subcategory_id, EXCLUDED.subcategory_id) IS NOT NULL),
                     synced_at      = NOW()
             """
             db.execute_batch(sql_orphan, orphan_rows)
             logger.info("Categorias huerfanas resueltas: %d", len(orphan_rows))
 
-        # Insertar productos primero (FK)
+        # Insertar productos primero (FK). WHERE IS DISTINCT FROM evita
+        # reescribir miles de filas sin cambios en Neon.
         sql_prod = """
             INSERT INTO products (company_id, bsale_product_id, name, description,
                                   bsale_product_type_id, stock_control,
@@ -698,11 +749,16 @@ def sync_variants() -> dict:
                 stock_control = EXCLUDED.stock_control,
                 allow_decimal = EXCLUDED.allow_decimal,
                 is_active = EXCLUDED.is_active, synced_at = NOW()
+            WHERE (products.name, products.description, products.bsale_product_type_id,
+                   products.stock_control, products.allow_decimal, products.is_active)
+                  IS DISTINCT FROM
+                  (EXCLUDED.name, EXCLUDED.description, EXCLUDED.bsale_product_type_id,
+                   EXCLUDED.stock_control, EXCLUDED.allow_decimal, EXCLUDED.is_active)
         """
         db.execute_batch(sql_prod, list(products_seen.values()))
         logger.info("Products upserted: %d", len(products_seen))
 
-        # Insertar variantes
+        # Insertar variantes (preserva variants.synced_at si no cambió nada)
         sql_var = """
             INSERT INTO variants (company_id, bsale_variant_id, bsale_product_id, code, bar_code,
                                   display_code, description, unit,
@@ -715,6 +771,13 @@ def sync_variants() -> dict:
                 description = EXCLUDED.description, unit = EXCLUDED.unit,
                 allow_negative_stock = EXCLUDED.allow_negative_stock,
                 is_active = EXCLUDED.is_active, synced_at = NOW()
+            WHERE (variants.bsale_product_id, variants.code, variants.bar_code,
+                   variants.display_code, variants.description, variants.unit,
+                   variants.allow_negative_stock, variants.is_active)
+                  IS DISTINCT FROM
+                  (EXCLUDED.bsale_product_id, EXCLUDED.code, EXCLUDED.bar_code,
+                   EXCLUDED.display_code, EXCLUDED.description, EXCLUDED.unit,
+                   EXCLUDED.allow_negative_stock, EXCLUDED.is_active)
         """
         stats["inserted"] = db.execute_batch(sql_var, variant_rows)
 
@@ -732,35 +795,81 @@ def sync_variants() -> dict:
 # VARIANT COSTS (1 llamada por variante, paralelizado)
 # ============================================================
 
-def sync_variant_costs() -> dict:
-    """Sincroniza costos. Usa multihilo porque es 1 call por variante."""
-    log_id = db.sync_start("variant_costs")
-    stats = {"fetched": 0, "inserted": 0, "skipped": 0}
+# Días tras los cuales el costo de una variante se vuelve a pedir aunque no
+# haya tenido recepciones (rotación completa ~semanal).
+COSTS_STALE_DAYS = 7
+
+
+def sync_variant_costs(full: bool = False) -> dict:
+    """Sincroniza costos. Usa multihilo porque es 1 call por variante.
+
+    Modo INCREMENTAL (default): el costo promedio en BSale solo cambia
+    cuando entra mercadería, así que solo se consultan las variantes activas
+    que:
+      - no tienen fila en variant_costs (variantes nuevas), o
+      - tuvieron una recepción con admission_date >= (último sync de su
+        costo - 2 días), o
+      - tienen el costo con más de COSTS_STALE_DAYS días (red de seguridad:
+        rotación completa semanal, cubre ajustes manuales de costo).
+    Requiere que recepciones se haya sincronizado ANTES (ver mt_sync).
+
+    full=True → consulta TODAS las variantes activas (comportamiento previo).
+    """
+    mode = "full" if full else "incremental"
+    log_id = db.sync_start("variant_costs", {"mode": mode})
+    stats = {"fetched": 0, "inserted": 0, "skipped": 0, "mode": mode}
 
     try:
         cid = current_company_id()
         # Obtener lista de variant IDs de nuestra DB para ESTA empresa
         with db.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT bsale_variant_id FROM variants "
-                    "WHERE is_active = TRUE AND company_id = %s",
-                    (cid,),
-                )
+                if full:
+                    cur.execute(
+                        "SELECT bsale_variant_id FROM variants "
+                        "WHERE is_active = TRUE AND company_id = %s",
+                        (cid,),
+                    )
+                else:
+                    cur.execute("""
+                        SELECT v.bsale_variant_id
+                        FROM variants v
+                        LEFT JOIN variant_costs vc
+                               ON vc.company_id = v.company_id
+                              AND vc.bsale_variant_id = v.bsale_variant_id
+                        WHERE v.company_id = %(cid)s
+                          AND v.is_active = TRUE
+                          AND (
+                                vc.bsale_variant_id IS NULL
+                             OR vc.synced_at < NOW() - make_interval(days => %(stale)s)
+                             OR EXISTS (
+                                    SELECT 1
+                                    FROM reception_details rd
+                                    WHERE rd.company_id = v.company_id
+                                      AND rd.bsale_variant_id = v.bsale_variant_id
+                                      AND rd.synced_at >= vc.synced_at
+                                )
+                          )
+                    """, {"cid": cid, "stale": COSTS_STALE_DAYS})
                 variant_ids = [row[0] for row in cur.fetchall()]
 
         stats["fetched"] = len(variant_ids)
-        logger.info("Sincronizando costos para %d variantes...", len(variant_ids))
+        logger.info("Sincronizando costos para %d variantes (modo %s)...",
+                    len(variant_ids), mode)
 
-        def _fetch_cost(vid: int) -> tuple:
+        def _fetch_cost(vid: int) -> tuple | None:
             url = f"{BSALE_BASE_URL}/variants/{vid}/costs.json"
             data = fetch(url)
+            if not data:
+                # Fallo de red tras reintentos: NO sobrescribir un costo
+                # existente con 0.0; se omite para reintentar en el próximo sync.
+                return None
 
             avg_cost = 0.0
             latest_cost = 0.0
             source = "NONE"
 
-            if data:
+            if True:
                 avg_raw = data.get("averageCost")
                 if avg_raw is not None:
                     try:
@@ -793,7 +902,11 @@ def sync_variant_costs() -> dict:
             futures = {exe.submit(_fetch_cost, vid): vid for vid in variant_ids}
             done_count = 0
             for future in concurrent.futures.as_completed(futures):
-                rows.append(future.result())
+                res = future.result()
+                if res is None:
+                    stats["skipped"] += 1
+                else:
+                    rows.append(res)
                 done_count += 1
                 if done_count % 200 == 0:
                     logger.info("Costos: %d/%d procesados", done_count, len(variant_ids))
@@ -1020,10 +1133,13 @@ def sync_price_lists() -> dict:
         stats["inserted"] = db.execute_batch(sql_header, header_rows)
         logger.info("Sincronizando detalles de %d listas de precio...", len(price_list_ids))
 
-        # ── 2. Detalle: precio por variante (paralelo, 1 call por lista) ─
+        # ── 2. Detalle: precio por variante (paralelo, repartiendo workers) ─
+        workers_per_list = max(4, BSALE_MAX_WORKERS // max(1, len(price_list_ids)))
+
         def _fetch_details(plid: int) -> list:
             url = f"{BSALE_BASE_URL}/price_lists/{plid}/details.json"
-            detail_items = fetch_subresource(url, page_size=50)
+            detail_items = fetch_subresource(url, page_size=50,
+                                             max_workers=workers_per_list)
             out = []
             for d in detail_items:
                 variant = d.get("variant") or {}
@@ -1059,6 +1175,9 @@ def sync_price_lists() -> dict:
                 net_value        = EXCLUDED.net_value,
                 value_with_taxes = EXCLUDED.value_with_taxes,
                 synced_at        = NOW()
+            WHERE (price_list_details.net_value, price_list_details.value_with_taxes)
+                  IS DISTINCT FROM
+                  (EXCLUDED.net_value, EXCLUDED.value_with_taxes)
         """
         stats["details_inserted"] = db.execute_batch(sql_detail, detail_rows)
         logger.info("Detalles de precio insertados: %d", stats["details_inserted"])
@@ -1143,6 +1262,9 @@ def sync_stock_levels() -> dict:
                 quantity_reserved = EXCLUDED.quantity_reserved,
                 quantity_available = EXCLUDED.quantity_available,
                 synced_at = NOW()
+            WHERE (stock_levels.quantity, stock_levels.quantity_reserved, stock_levels.quantity_available)
+                  IS DISTINCT FROM
+                  (EXCLUDED.quantity, EXCLUDED.quantity_reserved, EXCLUDED.quantity_available)
         """
         stats["inserted"] = db.execute_batch(sql, all_rows)
 
@@ -1211,7 +1333,25 @@ def snapshot_stock_history() -> dict:
 # PRODUCT TYPE ATTRIBUTES (atributos definidos por categoria)
 # ============================================================
 
-def sync_product_type_attributes() -> dict:
+# Los atributos casi nunca cambian (y esta cuenta ni los usa): 1 vez por semana.
+ATTRS_REFRESH_HOURS = 24 * 7
+
+
+def _skip_weekly(entity: str, force: bool) -> dict | None:
+    """Devuelve un dict de 'omitido' si la entidad se sincronizó hace menos
+    de ATTRS_REFRESH_HOURS y no se forzó. None = hay que correrla."""
+    if force:
+        return None
+    age = db.hours_since_last_success(entity)
+    if age is not None and age < ATTRS_REFRESH_HOURS:
+        logger.info("%s: ultima sync OK hace %.1fh (< %dh) -> se omite "
+                    "(usar --full-refresh para forzar)",
+                    entity, age, ATTRS_REFRESH_HOURS)
+        return {"omitido": True, "horas_desde_ultima": round(age, 1)}
+    return None
+
+
+def sync_product_type_attributes(force: bool = False) -> dict:
     """
     Sincroniza los tipos de atributo de cada categoria.
 
@@ -1220,7 +1360,11 @@ def sync_product_type_attributes() -> dict:
     e inserta los resultados en product_type_attributes.
 
     Paralelizado con ThreadPoolExecutor (~246 llamadas, rapido).
+    Cadencia semanal salvo force=True (ver ATTRS_REFRESH_HOURS).
     """
+    skipped = _skip_weekly("product_type_attributes", force)
+    if skipped:
+        return skipped
     log_id = db.sync_start("product_type_attributes")
     stats = {"fetched": 0, "inserted": 0, "skipped": 0}
 
@@ -1295,7 +1439,7 @@ def sync_product_type_attributes() -> dict:
 # VARIANT ATTRIBUTE VALUES (valores concretos por variante)
 # ============================================================
 
-def sync_variant_attribute_values() -> dict:
+def sync_variant_attribute_values(force: bool = False) -> dict:
     """
     Sincroniza los valores de atributo de cada variante activa.
 
@@ -1307,28 +1451,43 @@ def sync_variant_attribute_values() -> dict:
     product_type_attributes (para respetar la FK).
 
     Paralelizado con ThreadPoolExecutor (~3,375 llamadas, ~7-10 min).
+    Cadencia semanal salvo force=True (ver ATTRS_REFRESH_HOURS).
     """
+    skipped = _skip_weekly("variant_attribute_values", force)
+    if skipped:
+        return skipped
     log_id = db.sync_start("variant_attribute_values")
     stats = {"fetched": 0, "inserted": 0, "skipped": 0}
 
     try:
         cid = current_company_id()
-        # Obtener variantes activas y atributos conocidos para ESTA empresa
+        # Obtener atributos conocidos y SOLO las variantes activas cuyo
+        # product_type tenga al menos un atributo definido (evita hacer miles
+        # de llamadas en cuentas donde solo 1 categoría tiene atributos).
         with db.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT bsale_variant_id FROM variants "
-                    "WHERE is_active = TRUE AND company_id = %s",
-                    (cid,),
-                )
-                variant_ids = [row[0] for row in cur.fetchall()]
-
                 cur.execute(
                     "SELECT bsale_attribute_id FROM product_type_attributes "
                     "WHERE company_id = %s",
                     (cid,),
                 )
                 known_attr_ids = {row[0] for row in cur.fetchall()}
+
+                cur.execute("""
+                    SELECT v.bsale_variant_id
+                    FROM variants v
+                    JOIN products p
+                      ON p.company_id = v.company_id
+                     AND p.bsale_product_id = v.bsale_product_id
+                    WHERE v.is_active = TRUE
+                      AND v.company_id = %s
+                      AND p.bsale_product_type_id IN (
+                          SELECT DISTINCT bsale_product_type_id
+                          FROM product_type_attributes
+                          WHERE company_id = %s
+                      )
+                """, (cid, cid))
+                variant_ids = [row[0] for row in cur.fetchall()]
 
         logger.info("Sincronizando attribute_values para %d variantes activas...",
                     len(variant_ids))

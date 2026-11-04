@@ -34,6 +34,7 @@ from app.auth import (
 )
 from app.database import get_db
 from app.events import log_event
+from app.kawii_matrix import cache as matrix_cache
 
 
 router = APIRouter(
@@ -157,13 +158,17 @@ async def backfill_from_receptions(
     Idempotente: corrida 2 da los mismos cambios que corrida 1 (a menos que
     lleguen recepciones nuevas).
     """
-    # Calcular los nuevos costos desde reception_details
+    cid = company.company_id
+    # Calcular los nuevos costos desde reception_details (aislado por company_id)
     q_calc = """
         WITH a_actualizar AS (
             SELECT v.bsale_variant_id
             FROM variants v
-            JOIN variant_costs vc ON vc.bsale_variant_id = v.bsale_variant_id
-            WHERE v.is_active
+            JOIN variant_costs vc
+              ON vc.bsale_variant_id = v.bsale_variant_id
+             AND vc.company_id = v.company_id
+            WHERE v.company_id = :cid
+              AND v.is_active
               AND (vc.effective_cost IS NULL OR vc.effective_cost = 0)
         ),
         agregados AS (
@@ -173,15 +178,19 @@ async def backfill_from_receptions(
                    (
                      SELECT rd2.cost
                      FROM reception_details rd2
-                     JOIN receptions rec2 ON rec2.bsale_reception_id = rd2.bsale_reception_id
-                     WHERE rd2.bsale_variant_id = rd.bsale_variant_id
+                     JOIN receptions rec2
+                       ON rec2.bsale_reception_id = rd2.bsale_reception_id
+                      AND rec2.company_id = rd2.company_id
+                     WHERE rd2.company_id = :cid
+                       AND rd2.bsale_variant_id = rd.bsale_variant_id
                        AND rd2.cost > 0
                      ORDER BY rec2.admission_date DESC
                      LIMIT 1
                    ) AS latest_cost,
                    COUNT(*) FILTER (WHERE rd.cost > 0) AS n_recep
             FROM reception_details rd
-            WHERE rd.bsale_variant_id IN (SELECT bsale_variant_id FROM a_actualizar)
+            WHERE rd.company_id = :cid
+              AND rd.bsale_variant_id IN (SELECT bsale_variant_id FROM a_actualizar)
             GROUP BY rd.bsale_variant_id
         )
         SELECT a.bsale_variant_id,
@@ -191,7 +200,7 @@ async def backfill_from_receptions(
         FROM a_actualizar a
         LEFT JOIN agregados ag ON ag.bsale_variant_id = a.bsale_variant_id
     """
-    rows = (await db.execute(text(q_calc))).mappings().all()
+    rows = (await db.execute(text(q_calc), {"cid": cid})).mappings().all()
 
     cambios = []
     for r in rows:
@@ -216,33 +225,73 @@ async def backfill_from_receptions(
         })
 
     if not dry_run and cambios:
-        # Update batch
-        for c in cambios:
-            await db.execute(
-                text("""
-                    UPDATE variant_costs
-                       SET average_cost   = :avg,
-                           latest_cost    = :lat,
-                           effective_cost = :eff,
-                           cost_source    = :src,
-                           synced_at      = NOW()
-                     WHERE bsale_variant_id = :vid
-                """),
-                {
-                    "vid": c["bsale_variant_id"],
-                    "avg": c["average_cost"],
-                    "lat": c["latest_cost"],
-                    "eff": c["effective_cost"],
-                    "src": c["cost_source"],
-                },
-            )
+        # Bulk update en una sola query SQL (evita N roundtrips a Neon)
+        await db.execute(
+            text("""
+                WITH a_actualizar AS (
+                    SELECT v.bsale_variant_id
+                    FROM variants v
+                    JOIN variant_costs vc
+                      ON vc.bsale_variant_id = v.bsale_variant_id
+                     AND vc.company_id = v.company_id
+                    WHERE v.company_id = :cid
+                      AND v.is_active
+                      AND (vc.effective_cost IS NULL OR vc.effective_cost = 0)
+                ),
+                agregados AS (
+                    SELECT rd.bsale_variant_id,
+                           ROUND(
+                               (SUM(rd.quantity * rd.cost) FILTER (WHERE rd.cost > 0)
+                                / NULLIF(SUM(rd.quantity) FILTER (WHERE rd.cost > 0), 0))::numeric,
+                               4
+                           ) AS avg_cost,
+                           ROUND(
+                               (
+                                 SELECT rd2.cost
+                                 FROM reception_details rd2
+                                 JOIN receptions rec2
+                                   ON rec2.bsale_reception_id = rd2.bsale_reception_id
+                                  AND rec2.company_id = rd2.company_id
+                                 WHERE rd2.company_id = :cid
+                                   AND rd2.bsale_variant_id = rd.bsale_variant_id
+                                   AND rd2.cost > 0
+                                 ORDER BY rec2.admission_date DESC
+                                 LIMIT 1
+                               )::numeric,
+                               4
+                           ) AS latest_cost
+                    FROM reception_details rd
+                    WHERE rd.company_id = :cid
+                      AND rd.bsale_variant_id IN (SELECT bsale_variant_id FROM a_actualizar)
+                    GROUP BY rd.bsale_variant_id
+                )
+                UPDATE variant_costs vc
+                   SET average_cost   = COALESCE(ag.avg_cost, 0),
+                       latest_cost    = COALESCE(ag.latest_cost, 0),
+                       effective_cost = CASE
+                                            WHEN COALESCE(ag.avg_cost, 0) > 0 THEN ag.avg_cost
+                                            ELSE COALESCE(ag.latest_cost, 0)
+                                        END,
+                       cost_source    = CASE
+                                            WHEN COALESCE(ag.avg_cost, 0) > 0 THEN 'RECEPTION_AVG'
+                                            ELSE 'RECEPTION_LATEST'
+                                        END,
+                       synced_at      = NOW()
+                  FROM agregados ag
+                 WHERE vc.company_id = :cid
+                   AND vc.bsale_variant_id = ag.bsale_variant_id
+                   AND (COALESCE(ag.avg_cost, 0) > 0 OR COALESCE(ag.latest_cost, 0) > 0)
+            """),
+            {"cid": cid},
+        )
         await log_event(
-            db, company_id=company.company_id, event_type="config.updated",
+            db, company_id=cid, event_type="config.updated",
             actor_user_id=user.id,
             payload={"que": "variant_costs_backfill", "actualizados": len(cambios)},
             commit=False,
         )
         await db.commit()
+        matrix_cache.invalidate(company_id=cid)
 
     return {
         "dry_run":             dry_run,

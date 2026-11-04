@@ -140,38 +140,74 @@ def run_pipeline_for_company(
     since_unix: int,
     skip_documents: bool = False,
     skip_stock_snapshot: bool = False,
+    mode: str = "full",
+    full_refresh: bool = False,
 ) -> dict:
-    """Corre el sync completo para UNA empresa. Devuelve stats por fase.
+    """Corre el sync para UNA empresa. Devuelve stats por fase.
 
-    Cada fase captura su propia excepción — un error en Recepciones no
-    aborta el resto (Documentos aún corre). Errores quedan en el dict de
-    resultados con key 'ERROR'.
+    Modos:
+      - 'quick': refresco operativo rápido (~1-2 min). Actualiza stock,
+        recepciones/consumos recientes, costos de variantes con recepción
+        nueva y documentos del rango pedido. Ideal para botón manual en el día.
+      - 'full': pipeline completo (catálogo, listas de precio, stock,
+        recepciones/consumos, costos incrementales, documentos). Si además
+        `full_refresh=True`, fuerza re-descarga completa de atributos,
+        historial completo de recepciones/consumos y costos de todas las variantes.
+
+    NOTA DE ORDEN: Recepciones corre ANTES de Costos y CostosSucursal para que
+    ambos vean las recepciones recién ingresadas en la misma corrida.
     """
     logger = logging.getLogger("mt_sync")
     logger.info("=" * 72)
     logger.info(
-        "  Empresa: %s (id=%d, slug=%s)",
-        company["name"], company["id"], company["slug"],
+        "  Empresa: %s (id=%d, slug=%s) | modo=%s | full_refresh=%s",
+        company["name"], company["id"], company["slug"], mode, full_refresh,
     )
     logger.info("=" * 72)
 
     set_current_tenant(company["id"], company["token"], company["slug"])
 
     phase_results: dict = {}
-    fases = [
-        ("1.Taxonomia",         sync_taxonomy),
-        ("2.Sucursales",        sync_offices),
-        ("3.Usuarios",          sync_users),
-        ("4.Categorias_BSale",  sync_product_types),
-        ("5.Tipos_Documento",   sync_document_types),
-        ("6.Productos_Variant", sync_variants),
-        ("7.Attrs_Categoria",   sync_product_type_attributes),
-        ("8.Attrs_Variantes",   sync_variant_attribute_values),
-        ("9.Stock",             sync_stock_levels),
-        ("10.Costos",           sync_variant_costs),
-        ("11.CostosSucursal",   sync_variant_costs_by_office),
-        ("12.ListasPrecio",     sync_price_lists),
-    ]
+    if mode == "quick":
+        # Incluye maestros ligeros + variantes (~15s con paginación paralela)
+        # para que productos/categorías/usuarios recién creados en BSale entren
+        # al instante y NUNCA rompan FKs en stock_levels, recepciones o docs.
+        fases = [
+            ("1.Sucursales",        sync_offices),
+            ("2.Usuarios",          sync_users),
+            ("3.Categorias_BSale",  sync_product_types),
+            ("4.Tipos_Documento",   sync_document_types),
+            ("5.Productos_Variant", sync_variants),
+            ("6.Stock",             sync_stock_levels),
+            ("7.Recepciones",       lambda: sync_receptions(full_history=False)),
+            ("8.Consumos",          lambda: sync_consumptions(full_history=False)),
+            ("9.Costos",            lambda: sync_variant_costs(full=False)),
+            ("10.CostosSucursal",   sync_variant_costs_by_office),
+        ]
+    else:
+        hist_flag = True if full_refresh else None
+        fases = [
+            ("1.Taxonomia",         sync_taxonomy),
+            ("2.Sucursales",        sync_offices),
+            ("3.Usuarios",          sync_users),
+            ("4.Categorias_BSale",  sync_product_types),
+            ("5.Tipos_Documento",   sync_document_types),
+            ("6.Productos_Variant", sync_variants),
+            ("7.Attrs_Categoria",   lambda: sync_product_type_attributes(force=full_refresh)),
+            ("8.Attrs_Variantes",   lambda: sync_variant_attribute_values(force=full_refresh)),
+            ("9.Stock",             sync_stock_levels),
+            ("10.Recepciones",      lambda: sync_receptions(full_history=hist_flag)),
+            ("11.Consumos",         lambda: sync_consumptions(full_history=hist_flag)),
+            ("12.Costos",           lambda: sync_variant_costs(full=full_refresh)),
+            ("13.CostosSucursal",   sync_variant_costs_by_office),
+            ("14.ListasPrecio",     sync_price_lists),
+        ]
+        if not skip_stock_snapshot:
+            fases.append(("15.StockHistory", snapshot_stock_history))
+
+    if not skip_documents:
+        fases.append(("16.Documentos", lambda: sync_documents(since_unix=since_unix)))
+
     for nombre, func in fases:
         t0 = time.time()
         try:
@@ -182,48 +218,6 @@ def run_pipeline_for_company(
         except Exception as exc:
             phase_results[nombre] = {"ERROR": str(exc)}
             logger.exception("  %s FALLO: %s", nombre, exc)
-
-    if not skip_stock_snapshot:
-        t0 = time.time()
-        try:
-            r = snapshot_stock_history()
-            phase_results["13.StockHistory"] = {
-                "resultado": str(r), "duracion_s": round(time.time() - t0, 1),
-            }
-        except Exception as exc:
-            phase_results["13.StockHistory"] = {"ERROR": str(exc)}
-            logger.exception("  StockHistory FALLO: %s", exc)
-
-    t0 = time.time()
-    try:
-        r = sync_receptions()
-        phase_results["14.Recepciones"] = {
-            "resultado": str(r), "duracion_s": round(time.time() - t0, 1),
-        }
-    except Exception as exc:
-        phase_results["14.Recepciones"] = {"ERROR": str(exc)}
-        logger.exception("  Recepciones FALLO: %s", exc)
-
-    t0 = time.time()
-    try:
-        r = sync_consumptions()
-        phase_results["15.Consumos"] = {
-            "resultado": str(r), "duracion_s": round(time.time() - t0, 1),
-        }
-    except Exception as exc:
-        phase_results["15.Consumos"] = {"ERROR": str(exc)}
-        logger.exception("  Consumos FALLO: %s", exc)
-
-    if not skip_documents:
-        t0 = time.time()
-        try:
-            r = sync_documents(since_unix=since_unix)
-            phase_results["16.Documentos"] = {
-                "resultado": str(r), "duracion_s": round(time.time() - t0, 1),
-            }
-        except Exception as exc:
-            phase_results["16.Documentos"] = {"ERROR": str(exc)}
-            logger.exception("  Documentos FALLO: %s", exc)
 
     clear_current_tenant()
     return phase_results
@@ -246,6 +240,10 @@ def main() -> int:
                         help="Saltar la fase de documentos (útil si solo cambió catálogo)")
     parser.add_argument("--skip-stock-snapshot", action="store_true",
                         help="Saltar el snapshot diario de stock_history")
+    parser.add_argument("--mode", choices=["full", "quick"], default="full",
+                        help="'quick' refresca solo stock, recepciones/consumos recientes, costos nuevos y docs; 'full' corre todo el pipeline")
+    parser.add_argument("--full-refresh", action="store_true",
+                        help="Forzar descarga completa de costos, atributos e historial de recepciones/consumos")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -286,6 +284,8 @@ def main() -> int:
                     since_unix=since_unix,
                     skip_documents=args.skip_documents,
                     skip_stock_snapshot=args.skip_stock_snapshot,
+                    mode=args.mode,
+                    full_refresh=args.full_refresh,
                 )
                 all_results[company["name"]] = {
                     "id": company["id"],
@@ -302,18 +302,22 @@ def main() -> int:
         logger.info("=" * 72)
         logger.info("  RESUMEN MULTI-TENANT — %.1f min totales", elapsed / 60)
         logger.info("=" * 72)
+        total_errores = 0
         for name, r in all_results.items():
             if "ERROR" in r:
+                total_errores += 1
                 logger.info("  %-20s FAIL: %s", name, r["ERROR"])
             else:
                 errores = sum(
                     1 for f in r["fases"].values() if isinstance(f, dict) and "ERROR" in f
                 )
+                total_errores += errores
+                estado = "OK " if errores == 0 else "WARN"
                 logger.info(
-                    "  %-20s OK  | duración=%ss | errores=%d fase(s)",
-                    name, r["duracion_s"], errores,
+                    "  %-20s %s | duración=%ss | errores=%d fase(s)",
+                    name, estado, r["duracion_s"], errores,
                 )
-        return 0
+        return 1 if total_errores > 0 else 0
 
     except KeyboardInterrupt:
         logger.warning("Interrumpido por el usuario")
