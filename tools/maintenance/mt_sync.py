@@ -256,6 +256,8 @@ def main() -> int:
                         help="'quick' refresca solo stock, recepciones/consumos recientes, costos nuevos y docs; 'full' corre todo el pipeline")
     parser.add_argument("--full-refresh", action="store_true",
                         help="Forzar descarga completa de costos, atributos e historial de recepciones/consumos")
+    parser.add_argument("--verify", action="store_true",
+                        help="Al terminar, verificar que Neon cuadre con BSale (tools.maintenance.audit_sync)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -329,7 +331,20 @@ def main() -> int:
                     "  %-20s %s | duración=%ss | errores=%d fase(s)",
                     name, estado, r["duracion_s"], errores,
                 )
-        return 1 if total_errores > 0 else 0
+
+        verify_failed = False
+        if args.verify:
+            from tools.maintenance.audit_sync import FALLA, overall, verify_company
+            for company in companies:
+                if "ERROR" in all_results.get(company["name"], {}):
+                    continue  # el sync de esa empresa ni terminó
+                try:
+                    checks = verify_company(company)
+                    verify_failed |= overall(checks) == FALLA
+                except Exception as exc:
+                    logger.exception("  Verificación de %s falló: %s", company["name"], exc)
+                    verify_failed = True
+        return 1 if (total_errores > 0 or verify_failed) else 0
 
     except KeyboardInterrupt:
         logger.warning("Interrumpido por el usuario")
