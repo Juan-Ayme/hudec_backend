@@ -334,6 +334,9 @@ def sync_documents(since_unix: int | None = None) -> dict:
             stats["inserted"] += len(batch_doc_rows)
             stats["details_inserted"] += len(batch_det_rows)
 
+        # Documentos que se anularon en BSale DESPUÉS de haberse sincronizado.
+        stats["annulled_removed"] = _remove_annulled_documents(since_unix)
+
         logger.info("TURBO completado: %d headers, %d detalles insertados",
                      stats["inserted"], stats["details_inserted"])
 
@@ -345,6 +348,57 @@ def sync_documents(since_unix: int | None = None) -> dict:
         raise
 
     return stats
+
+
+# Ventana mínima para buscar anulaciones: una boleta puede anularse días o
+# semanas después de emitida, aunque el sync incremental mire solo 7 días.
+ANNULLED_LOOKBACK_DAYS = 120
+
+
+def _remove_annulled_documents(since_unix: int | None) -> int:
+    """Quita de la BD los documentos que en BSale quedaron anulados (state != 0).
+
+    El sync solo guarda documentos activos (state=0) y la mayoría de los
+    reportes cuentan todo lo que hay en `documents`. Si un documento se anula
+    después de sincronizado, el filtro state=0 ya no lo trae y quedaba contado
+    como venta para siempre. Se borra igual que si nunca hubiera entrado, y
+    cada uno queda registrado en data_quality_issues (ANNULLED_IN_BSALE) con su
+    monto.
+    """
+    import time as _time
+    now_unix = int(_time.time()) + 86400
+    floor = now_unix - ANNULLED_LOOKBACK_DAYS * 86400
+    start = min(since_unix, floor) if since_unix else None
+    extra = "&state=1" + (f"&emissiondaterange=[{start},{now_unix}]" if start else "")
+    items = paginate("/documents.json", extra)
+    ids = [_safe_int(d.get("id")) for d in items if _safe_int(d.get("id")) and d.get("state") != 0]
+    if not ids:
+        return 0
+    cid = current_company_id()
+    removed = 0
+    with db.get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT bsale_document_id, total_amount, emission_date FROM documents "
+                "WHERE company_id = %s AND bsale_document_id = ANY(%s)",
+                (cid, ids),
+            )
+            found = cur.fetchall()
+            if found:
+                found_ids = [r[0] for r in found]
+                cur.execute("DELETE FROM document_details WHERE company_id = %s AND bsale_document_id = ANY(%s)",
+                            (cid, found_ids))
+                cur.execute("DELETE FROM documents WHERE company_id = %s AND bsale_document_id = ANY(%s)",
+                            (cid, found_ids))
+                removed = cur.rowcount or 0
+        conn.commit()
+    for doc_id, total, emission in found:
+        db.log_quality_issue("documents", doc_id, "state", "ANNULLED_IN_BSALE",
+                             f"Documento anulado en BSale después de sincronizado; se quitó de la BD "
+                             f"(emisión {emission:%Y-%m-%d})", str(total))
+    if removed:
+        logger.warning("Documentos anulados en BSale quitados de la BD: %d", removed)
+    return removed
 
 
 def _flush_documents(doc_rows: list[tuple], det_rows: list[tuple]):

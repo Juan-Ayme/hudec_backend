@@ -31,6 +31,7 @@ from harvester.config import (
     BSALE_PAGE_SIZE,
     BSALE_TIMEOUT,
     BSALE_MAX_RETRIES,
+    BSALE_MAX_429_RETRIES,
     BSALE_MAX_RPS,
     BSALE_MAX_WORKERS,
 )
@@ -93,7 +94,9 @@ def fetch(url: str, retries: int = BSALE_MAX_RETRIES) -> dict[str, Any]:
     GET a la API de BSale con rate limiting y reintentos.
     Retorna el JSON parseado o {} si falla.
     """
-    for attempt in range(retries):
+    attempt = 0
+    throttled = 0
+    while attempt < retries:
         _limiter.acquire()
         try:
             resp = _session().get(url, headers=_build_headers(), timeout=BSALE_TIMEOUT)
@@ -102,30 +105,41 @@ def fetch(url: str, retries: int = BSALE_MAX_RETRIES) -> dict[str, Any]:
                 return resp.json()
 
             if resp.status_code == 429:
-                # Rate limited por BSale, backoff mas agresivo
-                wait = 2.0 * (attempt + 1)
-                logger.warning("429 Rate Limited en %s, esperando %.1fs", url, wait)
+                # Rate limited por BSale. No consume reintentos "de error": con
+                # muchos hilos los 429 llegan en ráfaga y 3 intentos de 2-6 s
+                # dejaban sin actualizar ~1/4 de los costos. Backoff exponencial
+                # con tope, hasta BSALE_MAX_429_RETRIES esperas.
+                throttled += 1
+                if throttled > BSALE_MAX_429_RETRIES:
+                    break
+                wait = min(30.0, 2.0 * (2 ** (throttled - 1)))
+                logger.warning("429 Rate Limited en %s, esperando %.1fs (%d/%d)",
+                               url, wait, throttled, BSALE_MAX_429_RETRIES)
                 time.sleep(wait)
                 continue
 
             # Otros errores HTTP
+            attempt += 1
             logger.warning(
                 "HTTP %d en %s (intento %d/%d)",
-                resp.status_code, url, attempt + 1, retries,
+                resp.status_code, url, attempt, retries,
             )
-            time.sleep(1.5 * (attempt + 1))
+            time.sleep(1.5 * attempt)
 
         except requests.exceptions.Timeout:
-            logger.warning("Timeout en %s (intento %d/%d)", url, attempt + 1, retries)
-            time.sleep(2.0 * (attempt + 1))
+            attempt += 1
+            logger.warning("Timeout en %s (intento %d/%d)", url, attempt, retries)
+            time.sleep(2.0 * attempt)
 
         except requests.exceptions.RequestException as exc:
+            attempt += 1
             logger.error("Error de red en %s: %s", url, exc)
-            if attempt == retries - 1:
+            if attempt >= retries:
                 return {}
             time.sleep(2.0)
 
-    logger.error("Agotados %d reintentos para %s", retries, url)
+    logger.error("Agotados reintentos (%d errores, %d esperas por 429) para %s",
+                 attempt, throttled, url)
     return {}
 
 

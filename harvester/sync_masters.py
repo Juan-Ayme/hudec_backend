@@ -597,6 +597,69 @@ def sync_document_types() -> dict:
 # PRODUCTS + VARIANTS (del mismo endpoint)
 # ============================================================
 
+# Si faltan más que esto en el listado, algo anda mal con la descarga:
+# no se reconcilia (mejor no desactivar nada que desactivar de más).
+UNLISTED_VARIANTS_LIMIT = 300
+
+
+def _fetch_unlisted_variants(listed: list[dict]) -> list[dict]:
+    """Variantes que /variants.json ya no lista pero que importan:
+
+      - activas en la BD → BSale las eliminó (state=97) y quedarían como
+        activas fantasma;
+      - referenciadas en ventas, recepciones o consumos pero ausentes de la
+        BD → sus ventas no tendrían producto ni categoría.
+
+    Se piden una por una a /variants/{id}.json?expand=[product] (mismo formato
+    que el listado) para que el flujo normal las guarde con su estado real.
+    Las que BSale no devuelve se registran y no se tocan.
+    """
+    cid = current_company_id()
+    listed_ids = [_safe_int(it.get("id")) for it in listed if _safe_int(it.get("id"))]
+    with db.get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT bsale_variant_id FROM variants
+                 WHERE company_id = %(c)s AND is_active
+                   AND NOT (bsale_variant_id = ANY(%(ids)s))
+                UNION
+                SELECT x.bsale_variant_id FROM (
+                    SELECT bsale_variant_id FROM document_details    WHERE company_id = %(c)s
+                    UNION SELECT bsale_variant_id FROM reception_details   WHERE company_id = %(c)s
+                    UNION SELECT bsale_variant_id FROM consumption_details WHERE company_id = %(c)s
+                ) x
+                 WHERE NOT EXISTS (SELECT 1 FROM variants v
+                                    WHERE v.company_id = %(c)s AND v.bsale_variant_id = x.bsale_variant_id)
+                   AND NOT (x.bsale_variant_id = ANY(%(ids)s))
+                """,
+                {"c": cid, "ids": listed_ids},
+            )
+            missing = [row[0] for row in cur.fetchall() if row[0]]
+    if not missing:
+        return []
+    if len(missing) > UNLISTED_VARIANTS_LIMIT:
+        logger.warning("Variantes fuera del listado: %d (> %d). No se reconcilia: "
+                       "revisar si la descarga de /variants.json vino incompleta.",
+                       len(missing), UNLISTED_VARIANTS_LIMIT)
+        return []
+
+    def _one(vid: int) -> dict:
+        return fetch(f"{BSALE_BASE_URL}/variants/{vid}.json?expand=%5Bproduct%5D")
+
+    found: list[dict] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(BSALE_MAX_WORKERS, 8)) as exe:
+        for vid, data in zip(missing, exe.map(_one, missing)):
+            if data and _safe_int(data.get("id")) == vid and data.get("product"):
+                found.append(data)
+            else:
+                db.log_quality_issue("variants", vid, "id", "NOT_FOUND",
+                                     "Variante referenciada que BSale no devuelve")
+    logger.info("Variantes fuera del listado: %d pedidas, %d recuperadas (eliminadas/inactivas)",
+                len(missing), len(found))
+    return found
+
+
 def sync_variants() -> dict:
     """
     Sincroniza productos y variantes desde /variants.json?expand=[product].
@@ -620,6 +683,11 @@ def sync_variants() -> dict:
     try:
         items = paginate("/variants.json", "&expand=%5Bproduct%5D")
         stats["fetched"] = len(items)
+        # El listado no trae las ELIMINADAS (state=97): se piden una por una
+        # las que la BD tiene activas o que aparecen en ventas/movimientos.
+        extra = _fetch_unlisted_variants(items)
+        stats["unlisted_recovered"] = len(extra)
+        items = items + extra
         stats["inactive"] = sum(
             1 for it in items if not _bsale_state_active(it.get("state"))
         )
@@ -800,6 +868,26 @@ def sync_variants() -> dict:
 COSTS_STALE_DAYS = 7
 
 
+def _latest_history_cost(history: list[dict]) -> float:
+    """Costo de la recepción MÁS RECIENTE con costo > 0.
+
+    BSale devuelve `history` del más antiguo al más nuevo, así que history[0]
+    era el costo más viejo. Se elige por admissionDate (empate: el último).
+    """
+    best_date, best_cost = None, 0.0
+    for h in history:
+        try:
+            cost = float(h.get("cost") or 0)
+        except (ValueError, TypeError):
+            continue
+        if cost <= 0:
+            continue
+        date = _safe_int(h.get("admissionDate"))
+        if best_date is None or date >= best_date:
+            best_date, best_cost = date, cost
+    return best_cost
+
+
 def sync_variant_costs(full: bool = False) -> dict:
     """Sincroniza costos. Usa multihilo porque es 1 call por variante.
 
@@ -877,12 +965,7 @@ def sync_variant_costs(full: bool = False) -> dict:
                     except (ValueError, TypeError):
                         pass
 
-                history = data.get("history") or []
-                if history:
-                    try:
-                        latest_cost = float(history[0].get("cost", 0) or 0)
-                    except (ValueError, TypeError):
-                        pass
+                latest_cost = _latest_history_cost(data.get("history") or [])
 
             # Determinar source y effective
             if avg_cost > 0:
@@ -1267,6 +1350,7 @@ def sync_stock_levels() -> dict:
                   (EXCLUDED.quantity, EXCLUDED.quantity_reserved, EXCLUDED.quantity_available)
         """
         stats["inserted"] = db.execute_batch(sql, all_rows)
+        stats["zeroed"] = _zero_unlisted_stock(cid, per_office_items)
 
         db.sync_finish(log_id, fetched=stats["fetched"], inserted=stats["inserted"],
                         skipped=stats["skipped"])
@@ -1276,6 +1360,54 @@ def sync_stock_levels() -> dict:
         raise
 
     return stats
+
+
+# Fracción máxima de filas de una sucursal que se pueden poner en cero en una
+# corrida. Más que eso sugiere una descarga incompleta: no se toca nada.
+STOCK_ZERO_MAX_FRACTION = 0.2
+
+
+def _zero_unlisted_stock(cid: int, per_office_items: dict[int, list[dict]]) -> int:
+    """Pone en 0 el stock de las filas que BSale ya no lista (variantes que se
+    desactivaron o eliminaron: BSale deja de informar su stock). Sin esto la
+    BD conserva la última cantidad para siempre. La fila no se borra: si la
+    variante se reactiva, el próximo sync la vuelve a llenar."""
+    zeroed = 0
+    with db.get_conn() as conn:
+        with conn.cursor() as cur:
+            for oid, items in per_office_items.items():
+                listed = [_safe_int(it.get("id")) for it in items if _safe_int(it.get("id"))]
+                if not listed:
+                    continue  # sucursal sin respuesta o vacía: no se infiere nada
+                cur.execute(
+                    """SELECT count(*) FILTER (WHERE NOT (bsale_stock_id = ANY(%(ids)s))
+                                                 AND (quantity <> 0 OR quantity_reserved <> 0
+                                                      OR quantity_available <> 0)),
+                              count(*)
+                         FROM stock_levels WHERE company_id = %(c)s AND bsale_office_id = %(o)s""",
+                    {"c": cid, "o": oid, "ids": listed},
+                )
+                to_zero, total = cur.fetchone()
+                if not to_zero:
+                    continue
+                if to_zero > max(10, total * STOCK_ZERO_MAX_FRACTION):
+                    logger.warning("Stock office %d: %d filas a poner en 0 de %d — se omite "
+                                   "(posible descarga incompleta)", oid, to_zero, total)
+                    continue
+                cur.execute(
+                    """UPDATE stock_levels
+                          SET quantity = 0, quantity_reserved = 0, quantity_available = 0,
+                              synced_at = NOW()
+                        WHERE company_id = %(c)s AND bsale_office_id = %(o)s
+                          AND NOT (bsale_stock_id = ANY(%(ids)s))
+                          AND (quantity <> 0 OR quantity_reserved <> 0 OR quantity_available <> 0)""",
+                    {"c": cid, "o": oid, "ids": listed},
+                )
+                zeroed += cur.rowcount or 0
+        conn.commit()
+    if zeroed:
+        logger.info("Stock: %d filas que BSale ya no lista quedaron en 0", zeroed)
+    return zeroed
 
 
 # ============================================================

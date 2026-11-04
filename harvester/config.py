@@ -35,6 +35,7 @@ BSALE_TIMEOUT: int = 12     # Segundos antes de considerar un request como falli
                             # Antes era 25 — la P99 real es <2s; un timeout más bajo
                             # corta más rápido los stalls y deja al retry handler trabajar.
 BSALE_MAX_RETRIES: int = 3  # Reintentos automaticos ante errores de red o 5xx
+BSALE_MAX_429_RETRIES: int = int(os.environ.get("BSALE_MAX_429_RETRIES", "6"))  # Esperas ante 429 (2,4,8,16,30,30 s)
 BSALE_MAX_WORKERS: int = int(os.environ.get("BSALE_MAX_WORKERS", "20"))
                             # Hilos paralelos para llamadas que se pueden paralelizar.
                             # 2026-11: subido 8 → 20. La latencia real de BSale es
