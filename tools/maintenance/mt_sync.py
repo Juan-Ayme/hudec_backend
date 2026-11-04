@@ -60,6 +60,7 @@ from harvester.sync_masters import (
     sync_variant_attribute_values,
 )
 from harvester.sync_transactions import sync_documents, sync_receptions, sync_consumptions
+from harvester.sync_payments import sync_payment_types, sync_payments, sync_returns
 
 
 LOG_FMT = "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s"
@@ -206,7 +207,18 @@ def run_pipeline_for_company(
             fases.append(("15.StockHistory", snapshot_stock_history))
 
     if not skip_documents:
-        fases.append(("16.Documentos", lambda: sync_documents(since_unix=since_unix)))
+        # Pagos: en quick solo la ventana de días; en full, automático (listado
+        # completo semanal para capturar anulaciones viejas) o forzado con
+        # --full-refresh. Devoluciones va después de Documentos porque resuelve
+        # la variante desde document_details.
+        pay_hist = False if mode == "quick" else (True if full_refresh else None)
+        fases += [
+            ("16.Documentos",   lambda: sync_documents(since_unix=since_unix)),
+            ("17.MediosPago",   sync_payment_types),
+            ("18.Pagos",        lambda: sync_payments(since_unix=since_unix,
+                                                      full_history=pay_hist)),
+            ("19.Devoluciones", sync_returns),
+        ]
 
     for nombre, func in fases:
         t0 = time.time()
